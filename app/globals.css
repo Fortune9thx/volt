@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/*
+  Volt design tokens -- extracted from the reference screenshots (a clean,
+  premium SaaS product: soft dark charcoal hero sections, light content
+  sections, teal primary accent, warm orange secondary accent, large
+  rounded cards with soft shadows). Deliberately NOT a "crypto dark app" --
+  the charcoal is a hero-section treatment, not the whole app's chrome.
+*/
+:root {
+  --charcoal-950: #0f1115;
+  --charcoal-900: #14161b;
+  --charcoal-800: #1d2027;
+  --charcoal-700: #262a33;
+
+  --teal-400: #2dd4bf;
+  --teal-500: #14b8a6;
+  --teal-600: #0d9488;
+
+  --orange-400: #fb923c;
+  --orange-500: #f97316;
+
+  --blue-500: #3b82f6;
+  --blue-600: #2563eb;
+
+  --surface: #ffffff;
+  --surface-alt: #f7f8fa;
+  --surface-sunken: #eef0f3;
+
+  --text-primary: #14161b;
+  --text-secondary: #5b6270;
+  --text-muted: #8a90a0;
+  --text-on-dark: #f4f5f7;
+  --text-on-dark-muted: #9aa0ad;
+
+  --border-subtle: #e7e9ed;
+
+  --danger: #e0574c;
+  --success: #22a06b;
+
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+
+  --shadow-card: 0 20px 40px -16px rgba(15, 23, 42, 0.14), 0 4px 12px -2px rgba(15, 23, 42, 0.06);
+  --shadow-card-hover: 0 28px 56px -18px rgba(15, 23, 42, 0.18), 0 6px 16px -2px rgba(15, 23, 42, 0.08);
+  --shadow-pop: 0 12px 28px -8px rgba(15, 23, 42, 0.16);
+
+  --background: var(--surface);
+  --foreground: var(--text-primary);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-charcoal-950: var(--charcoal-950);
+  --color-charcoal-900: var(--charcoal-900);
+  --color-charcoal-800: var(--charcoal-800);
+  --color-charcoal-700: var(--charcoal-700);
+
+  --color-teal-400: var(--teal-400);
+  --color-teal-500: var(--teal-500);
+  --color-teal-600: var(--teal-600);
+
+  --color-orange-400: var(--orange-400);
+  --color-orange-500: var(--orange-500);
+
+  --color-blue-500: var(--blue-500);
+  --color-blue-600: var(--blue-600);
+
+  --color-surface: var(--surface);
+  --color-surface-alt: var(--surface-alt);
+  --color-surface-sunken: var(--surface-sunken);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-text-on-dark: var(--text-on-dark);
+  --color-text-on-dark-muted: var(--text-on-dark-muted);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --font-sans: var(--font-inter);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+.shadow-card {
+  box-shadow: var(--shadow-card);
+}
+.shadow-card-hover {
+  box-shadow: var(--shadow-card-hover);
+}
+.shadow-pop {
+  box-shadow: var(--shadow-pop);
+}
+
+.hero-diagonal {
+  clip-path: polygon(0 0, 100% 0, 100% 82%, 0 100%);
+}

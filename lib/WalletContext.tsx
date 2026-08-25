@@ -1,0 +1,100 @@
+"use client";
+
+import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from "react";
+import {
+  connectWallet,
+  disconnectWallet,
+  getWalletChainId,
+  switchToTargetChain,
+  getActiveProvider,
+  TARGET_CHAIN_ID,
+  TARGET_CHAIN,
+} from "./genlayer";
+
+interface WalletContextValue {
+  address: string | null;
+  connecting: boolean;
+  error: string | null;
+  connect: () => Promise<string>;
+  disconnect: () => void;
+  chainId: number | null;
+  wrongChain: boolean;
+  targetChainName: string;
+  switchChain: () => Promise<void>;
+  switchingChain: boolean;
+}
+
+const WalletContext = createContext<WalletContextValue | null>(null);
+
+export function WalletProvider({ children }: { children: ReactNode }) {
+  const [address, setAddress] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [chainId, setChainId] = useState<number | null>(null);
+  const [switchingChain, setSwitchingChain] = useState(false);
+
+  const wrongChain = address !== null && chainId !== null && chainId !== TARGET_CHAIN_ID;
+
+  const connect = useCallback(async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      const addr = await connectWallet();
+      setAddress(addr);
+      setChainId(await getWalletChainId());
+      return addr;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to connect wallet");
+      throw err;
+    } finally {
+      setConnecting(false);
+    }
+  }, []);
+
+  const disconnect = useCallback(() => {
+    disconnectWallet();
+    setAddress(null);
+    setChainId(null);
+    setError(null);
+  }, []);
+
+  const switchChain = useCallback(async () => {
+    setSwitchingChain(true);
+    setError(null);
+    try {
+      await switchToTargetChain();
+      setChainId(await getWalletChainId());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to switch network");
+      throw err;
+    } finally {
+      setSwitchingChain(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Binds to whichever provider connectWallet() actually discovered and
+    // used (EIP-6963 or a legacy vendor global) -- not necessarily
+    // window.ethereum, which some wallets don't set unless they're the
+    // browser's default wallet.
+    const provider = getActiveProvider() as { on?: (event: string, handler: (hex: string) => void) => void; removeListener?: (event: string, handler: (hex: string) => void) => void } | null;
+    if (!provider) return;
+    const handleChainChanged = (hex: string) => setChainId(parseInt(hex, 16));
+    provider.on?.("chainChanged", handleChainChanged);
+    return () => provider.removeListener?.("chainChanged", handleChainChanged);
+  }, [address]);
+
+  return (
+    <WalletContext.Provider
+      value={{ address, connecting, error, connect, disconnect, chainId, wrongChain, targetChainName: TARGET_CHAIN.name, switchChain, switchingChain }}
+    >
+      {children}
+    </WalletContext.Provider>
+  );
+}
+
+export function useWallet() {
+  const ctx = useContext(WalletContext);
+  if (!ctx) throw new Error("useWallet must be used within WalletProvider");
+  return ctx;
+}
