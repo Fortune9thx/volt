@@ -46,7 +46,7 @@ export default function Home() {
                 <Button size="lg">Create a Channel</Button>
               </Link>
               <Link href="/docs">
-                <Button size="lg" variant="ghost" className="border-white/15 text-text-on-dark hover:bg-white/5">
+                <Button size="lg" variant="ghostDark">
                   Read the docs
                 </Button>
               </Link>
