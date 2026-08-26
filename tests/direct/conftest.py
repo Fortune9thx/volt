@@ -67,6 +67,10 @@ def _patched_handle_gl_call(vm, request):
 
 
 def _handle_exec_prompt_template(vm, data):
+    # prompt_non_comparative's payload has an "input" key; prompt_comparative's
+    # (used by Volt's Stage B) has "leader_answer"/"validator_answer" instead
+    # -- fall back to validator_answer so both shapes get *something* to
+    # match a registered vm.mock_llm() override against.
     match_text = data.get("input") or data.get("validator_answer") or ""
 
     override = vm._match_llm_mock(match_text) if match_text else None
@@ -76,6 +80,17 @@ def _handle_exec_prompt_template(vm, data):
             override = _json.dumps(override)
         return {"ok": override}
 
+    # Default (no override registered): echo back a truthy "agree" result.
+    # This means a test that never registers an explicit disagreement mock
+    # cannot observe eq_principle's OWN validator voting False from a
+    # genuinely different independent answer -- proving that requires the
+    # real GenVM node's "EqComparative"/"EqNonComparative*" judgment, which
+    # this harness stubs out entirely. This is the same class of gap already
+    # documented for gl.eq_principle.strict_eq's spawn_sandbox dependency:
+    # a real, disclosed test-harness limitation, not a contract flaw. Stage
+    # A's hand-written run_nondet_unsafe validator (_extract_settlement_facts)
+    # does NOT go through this path and IS genuinely exercisable -- see
+    # test_judgment_consensus.py.
     return {"ok": match_text}
 
 
@@ -107,7 +122,11 @@ def mock_two_stage_judgment(direct_vm, facts: dict, intent: dict, evidence_url_p
     "supports_claim": True, "facts_summary": "..."}.
 
     intent: the Stage B result, e.g. {"outcome_type": "full",
-    "approved_amount_gen": 500, "confidence": "0.95", "reasoning": "..."}."""
+    "confidence": "0.95", "reasoning": "..."}, or for a partial outcome,
+    {"outcome_type": "partial", "partial_percent": 50, "confidence": "0.9",
+    "reasoning": "..."} -- partial_percent must be one of the fixed buckets
+    the contract accepts (25/50/75); the exact USDC amount is never taken
+    from the model directly (see contracts/Volt.py's judge_claim)."""
     facts = dict(facts)
     facts.setdefault("fetch_ok", True)
     facts.setdefault("supports_claim", True)

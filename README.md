@@ -3,7 +3,7 @@
 **Settlement that only moves when reality agrees.**
 
 **Live app:** [volt-x9.vercel.app](https://volt-x9.vercel.app)
-**Live contract (GenLayer Bradbury):** [`0x2759203ccc24aAcdAC3D537F912A1D8F30c6B0Ea`](https://explorer-bradbury.genlayer.com/address/0x2759203ccc24aAcdAC3D537F912A1D8F30c6B0Ea)
+**Live contract (GenLayer Bradbury):** [`0xb1B069ED061f355cEd3592f1aD82c627c2e8D51E`](https://explorer-bradbury.genlayer.com/address/0xb1B069ED061f355cEd3592f1aD82c627c2e8D51E)
 **Live escrow (Base Sepolia):** [`0x60d692A8731E90A241605644A653ECdCfa31D549`](https://sepolia.basescan.org/address/0x60d692A8731E90A241605644A653ECdCfa31D549)
 
 ## What Volt does
@@ -29,7 +29,7 @@ The core loop:
 
 GenLayer cannot call or verify state on a separate chain natively — there's no on-chain bridge between an Intelligent Contract and an EVM L2 like Base. So Volt splits responsibility deliberately:
 
-- **GenLayer (Bradbury)** — `contracts/Volt.py` is the **ledger and judge**. It never custodies real funds; `channel.balance_units` mirrors what's actually locked on Base. Two-stage judgment: Stage A fetches and verifies the claimant's own evidence (fail-closed); Stage B (`gl.eq_principle.prompt_non_comparative`) judges the Mandate's intent against those already-agreed facts.
+- **GenLayer (Bradbury)** — `contracts/Volt.py` is the **ledger and judge**. It never custodies real funds; `channel.balance_units` mirrors what's actually locked on Base. Two-stage judgment: Stage A fetches and verifies the claimant's own evidence (fail-closed); Stage B (`gl.eq_principle.prompt_comparative`) judges the Mandate's intent against those already-agreed facts, binding the exact payout to a small set of consensus-checkable buckets rather than a free-typed model number (see SECURITY.md).
 - **Base Sepolia** — `evm/contracts/VoltEscrow.sol` is the **vault**. It holds the real USDC (OpenZeppelin `SafeERC20` + `ReentrancyGuard`, full CEI ordering).
 - **`scripts/relayer.mjs`** — a **trusted relayer** bridges both directions: it observes real `FundsLocked` events on Base and mirrors them into GenLayer (`confirm_lock`), and executes GenLayer's already-finalized verdicts as real Base-side transfers (`settle`/`refundChannel`), reporting back via `mark_relayed`.
 
@@ -94,7 +94,9 @@ Full detail in [SECURITY.md](./SECURITY.md). In summary:
 - **Two-stage, confidence-gated judgment** — Stage B never runs unless Stage A's independent leader/validator extraction agrees the evidence is real and on-topic.
 - **Idempotent bridge in both directions** — every relayer-facing method (`confirm_lock`, `mark_relayed`, `confirm_channel_closed`) is guarded by a processed-tx-hash ledger; a retried or duplicated relayer call can never double-count a lock or double-execute a settlement.
 - **Two-phase channel closure** — `close_channel` only moves a channel to `"closing"`; only the relayer's `confirm_channel_closed`, after the real Base-side refund executes, finalizes `"closed"`.
-- **Full access-control matrix** — every protected write is guarded, proven by a funded-random-wallet test suite that asserts both the revert and that state is unchanged.
+- **Full access-control matrix** — every protected write is guarded, including `submit_claim` restricted to the channel's funder or a listed party (not any wallet), proven by a funded-random-wallet test suite that asserts both the revert and that state is unchanged.
+- **The fund-moving amount is bound to consensus, not free-typed** — `full`/`refund` are fully deterministic; `partial` is computed in contract code from one of three fixed percentage buckets the model can only choose among, compared across leader and validator via `gl.eq_principle.prompt_comparative` rather than checked against a qualitative rubric alone.
+- **Address comparisons are case-normalized** — every stored/compared address is lowercased before use, so a checksummed canonical value never silently fails to match a differently-cased wallet-supplied address.
 - **Trusted relayer, disclosed not hidden** — the single most important limitation of this design; see SECURITY.md for exactly what it can and can't do.
 
 ## Built on GenLayer + Base

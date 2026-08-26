@@ -29,7 +29,7 @@ def test_full_channel_lifecycle_claim_judge_execute_relay_stays_open(contract, d
     direct_vm.sender = direct_alice
     channel_id = contract.create_channel(
         mandate="Pay the claimant 500 USDC if the referenced shipment tracking page shows status DELIVERED at the destination address.",
-        parties=f"{direct_alice},{direct_bob}",
+        parties=f"{str(direct_alice)},{str(direct_bob)}",
         expiry="2026-12-31",
     )
     assert channel_id == "chn_1"
@@ -59,7 +59,7 @@ def test_full_channel_lifecycle_claim_judge_execute_relay_stays_open(contract, d
     mock_two_stage_judgment(
         direct_vm,
         facts={"fetch_ok": True, "supports_claim": True, "facts_summary": "Tracking page shows DELIVERED at destination."},
-        intent={"outcome_type": "full", "approved_amount_usdc": 500, "confidence": "0.96", "reasoning": "Tracking page confirms delivery, satisfying the Mandate."},
+        intent={"outcome_type": "full", "confidence": "0.96", "reasoning": "Tracking page confirms delivery, satisfying the Mandate."},
     )
     status = contract.judge_claim(claim_id=claim_id)
     assert status == "judged"
@@ -98,7 +98,7 @@ def test_full_channel_lifecycle_claim_judge_execute_relay_stays_open(contract, d
     mock_two_stage_judgment(
         direct_vm,
         facts={"fetch_ok": True, "supports_claim": True, "facts_summary": "Second shipment also shows DELIVERED."},
-        intent={"outcome_type": "full", "approved_amount_usdc": 200, "confidence": "0.93", "reasoning": "Second tracking page also confirms delivery."},
+        intent={"outcome_type": "full", "confidence": "0.93", "reasoning": "Second tracking page also confirms delivery."},
     )
     contract.judge_claim(claim_id=second_claim_id)
     contract.execute_settlement(claim_id=second_claim_id)
@@ -131,7 +131,7 @@ def test_claim_with_unfetchable_evidence_fails_closed_and_refunds(contract, dire
     direct_vm.sender = direct_alice
     channel_id = contract.create_channel(
         mandate="Pay 100 USDC if the linked page proves the event occurred.",
-        parties=f"{direct_alice},{direct_bob}",
+        parties=f"{str(direct_alice)},{str(direct_bob)}",
         expiry="2026-12-31",
     )
     direct_vm.sender = direct_owner

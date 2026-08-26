@@ -13,6 +13,13 @@ from genlayer import *
 USDC_UNIT = 10 ** 6
 CONFIDENCE_THRESHOLD = 0.85
 MAX_USDC_AMOUNT = 10 ** 12
+# "partial" settlements may only claim one of these fixed percentages of the
+# requested amount. A free-typed integer here would let leader/validator
+# disagree on the exact payout while both still satisfy a loosely-worded
+# equivalence criteria -- collapsing to a tiny, named set of buckets is what
+# makes the amount itself something gl.eq_principle.prompt_comparative can
+# actually bind two independent LLM runs to agreeing on. See SECURITY.md.
+PARTIAL_PERCENT_BUCKETS = (25, 50, 75)
 
 
 class Volt(gl.Contract):
@@ -28,8 +35,8 @@ class Volt(gl.Contract):
     claim_count: u256
 
     def __init__(self):
-        self.owner = str(gl.message.sender_address)
-        self.relayer = str(gl.message.sender_address)
+        self.owner = self._addr(gl.message.sender_address)
+        self.relayer = self._addr(gl.message.sender_address)
         self.paused = False
         self.channels = TreeMap()
         self.claims = TreeMap()
@@ -56,13 +63,36 @@ class Volt(gl.Contract):
         if self.paused:
             raise gl.vm.UserError("CONTRACT_PAUSED")
 
+    def _addr(self, value) -> str:
+        # Lowercased comparison/storage key for every address. EIP-55
+        # checksum casing carries no extra information -- it's a checksum
+        # FOR the same hex digits -- so comparing lowercased forms is always
+        # correct, and immune to a wallet or frontend returning a different
+        # case than GenLayer's own str(Address) form. Without this, a
+        # checksummed stored value compared against a raw wallet-returned
+        # address silently fails to match (confirmed real GenLayer rejection
+        # pattern -- see SECURITY.md).
+        return str(value).strip().lower()
+
     def _require_owner(self):
-        if str(gl.message.sender_address) != self.owner:
+        if self._addr(gl.message.sender_address) != self._addr(self.owner):
             raise gl.vm.UserError("NOT_OWNER")
 
     def _require_relayer(self):
-        if str(gl.message.sender_address) != self.relayer:
+        if self._addr(gl.message.sender_address) != self._addr(self.relayer):
             raise gl.vm.UserError("NOT_RELAYER")
+
+    def _is_channel_party(self, record: dict, address) -> bool:
+        # True if `address` is the channel's funder or one of its
+        # comma-separated `parties`. Used to gate submit_claim -- without
+        # this, ANY wallet could submit a claim (and thus become the
+        # relayer-paid recipient) against a channel it has no relationship
+        # to. See SECURITY.md's access control matrix.
+        target = self._addr(address)
+        if self._addr(record.get("funder", "")) == target:
+            return True
+        parties = [self._addr(p) for p in record.get("parties", "").split(",") if p.strip()]
+        return target in parties
 
     def _require_unprocessed_tx(self, base_tx_hash: str):
         # Idempotency guard: the relayer may retry a submission (e.g. after
@@ -228,13 +258,17 @@ class Volt(gl.Contract):
         self._require_nonempty(parties, "INVALID_PARTIES", max_len=1000)
         self._require_nonempty(expiry, "INVALID_EXPIRY", max_len=32)
 
+        parties_normalized = ",".join(p.strip().lower() for p in parties.split(",") if p.strip())
+        if not parties_normalized:
+            raise gl.vm.UserError("INVALID_PARTIES")
+
         channel_id = f"chn_{int(self.channel_count) + 1}"
         self.channel_count = u256(int(self.channel_count) + 1)
-        funder = str(gl.message.sender_address)
+        funder = self._addr(gl.message.sender_address)
         record = {
             "id": channel_id,
             "mandate": mandate,
-            "parties": parties,
+            "parties": parties_normalized,
             "funder": funder,
             "balance_units": "0",
             "total_locked_units": "0",
@@ -287,7 +321,7 @@ class Volt(gl.Contract):
         result = []
         for cid in ids:
             rec = json.loads(self.channels[cid])
-            if rec.get("funder") == address or address in rec.get("parties", ""):
+            if self._is_channel_party(rec, address):
                 result.append(rec)
         return json.dumps(result)
 
@@ -302,7 +336,7 @@ class Volt(gl.Contract):
         if channel_id not in self.channels:
             raise gl.vm.UserError("CHANNEL_NOT_FOUND")
         record = json.loads(self.channels[channel_id])
-        if str(gl.message.sender_address) != record.get("funder"):
+        if self._addr(gl.message.sender_address) != self._addr(record.get("funder", "")):
             raise gl.vm.UserError("NOT_CHANNEL_FUNDER")
         if record.get("status") != "active":
             raise gl.vm.UserError("CHANNEL_NOT_ACTIVE")
@@ -336,6 +370,14 @@ class Volt(gl.Contract):
         record = json.loads(self.channels[channel_id])
         if record.get("status") != "active":
             raise gl.vm.UserError("CHANNEL_NOT_ACTIVE")
+        claimant = self._addr(gl.message.sender_address)
+        if not self._is_channel_party(record, claimant):
+            # Without this, any wallet could submit a claim against someone
+            # else's channel and become the recorded claimant -- which the
+            # relayer later pays out to directly (scripts/relayer.mjs reads
+            # claim.claimant as VoltEscrow.settle's recipient). A real fund-
+            # diversion vector, not a style issue. See SECURITY.md.
+            raise gl.vm.UserError("NOT_CHANNEL_PARTY")
         self._require_nonempty(evidence, "INVALID_EVIDENCE", max_len=2000)
         requested_units = int(self._require_positive_usdc(requested_amount_usdc, "INVALID_REQUESTED_AMOUNT"))
         if requested_units > int(record.get("balance_units", "0")):
@@ -343,7 +385,6 @@ class Volt(gl.Contract):
 
         claim_id = f"clm_{int(self.claim_count) + 1}"
         self.claim_count = u256(int(self.claim_count) + 1)
-        claimant = str(gl.message.sender_address)
         claim_record = {
             "id": claim_id,
             "channel_id": channel_id,
@@ -422,28 +463,47 @@ class Volt(gl.Contract):
                 'of "full", "partial", "refund" -- "full" if the Mandate\'s '
                 'condition is clearly met for the full requested amount, "partial" '
                 "if met but only partially justified, \"refund\" if not met), "
-                '"approved_amount_usdc": (plain integer, <= the requested amount, '
-                '0 if outcome_type is refund), "confidence": "(a decimal 0.0-1.0 '
-                'as a QUOTED STRING, never a bare number)", "reasoning": (ONE '
-                "short sentence grounded in the verified facts)}. Every key above "
-                "is REQUIRED -- never omit one. Only claim high confidence when "
-                "the verified facts clearly and unambiguously satisfy the Mandate."
+                '"partial_percent": (REQUIRED only when outcome_type is "partial" -- '
+                "must be exactly one of the integers 25, 50, or 75, representing "
+                'what percentage of the requested amount is justified; use 0 for '
+                'full/refund -- there is no other way to express a partial amount), '
+                '"confidence": "(a decimal 0.0-1.0 as a QUOTED STRING, never a bare '
+                'number)", "reasoning": (ONE short sentence grounded in the '
+                "verified facts)}. Every key above is REQUIRED -- never omit one. "
+                "Only claim high confidence when the verified facts clearly and "
+                "unambiguously satisfy the Mandate."
             )
             result = gl.nondet.exec_prompt(prompt, response_format="json")
             return json.dumps(result)
 
-        outcome_str = gl.eq_principle.prompt_non_comparative(
+        # gl.eq_principle.prompt_comparative (NOT prompt_non_comparative) is
+        # used deliberately: prompt_non_comparative's validator only checks
+        # the LEADER's own answer against a qualitative rubric, independently
+        # of what the validator itself would have answered -- so two
+        # materially different payout decisions can both "satisfy the
+        # criteria" and pass. prompt_comparative instead asks the model to
+        # judge whether the leader's answer and the validator's own
+        # independently-derived answer are the SAME decision, under an
+        # explicit principle that names exactly which fields must match.
+        # Combined with collapsing "partial" to three fixed buckets above,
+        # this is what actually binds the fund-moving number to consensus
+        # instead of trusting either party's free-typed integer. See
+        # SECURITY.md's "Two-stage judgment" section for the full rationale
+        # and the SDK source (genlayer/gl/eq_principle.py) this is based on.
+        outcome_str = gl.eq_principle.prompt_comparative(
             judge_intent,
-            task="Judge a natural-language Settlement Mandate against independently-verified facts and decide a settlement outcome.",
-            criteria=(
-                "outcome_type must be exactly one of full/partial/refund, consistent with the "
-                "verified facts; approved_amount_usdc must never exceed the requested amount; "
-                "confidence must be a quoted decimal string reflecting genuine certainty; "
-                "reasoning must be one short sentence grounded in the verified facts, and "
-                "every required key must be present -- none omitted."
+            principle=(
+                "Two independent settlement judgments over the same already-"
+                "verified facts and the same Mandate are equivalent ONLY if they "
+                "agree exactly on outcome_type (full/partial/refund) AND, when "
+                "outcome_type is 'partial', agree exactly on partial_percent (one "
+                "of 25, 50, 75). Differences in reasoning wording, exact "
+                "confidence value, or formatting NEVER make two answers non-"
+                "equivalent -- ONLY a different outcome_type, or a different "
+                "partial_percent under 'partial', makes them non-equivalent."
             ),
         )
-        safe_default = {"outcome_type": "refund", "approved_amount_usdc": 0, "confidence": "0.0", "reasoning": "Judgment output was malformed; settlement refused as a safe default."}
+        safe_default = {"outcome_type": "refund", "partial_percent": 0, "confidence": "0.0", "reasoning": "Judgment output was malformed; settlement refused as a safe default."}
         try:
             outcome = json.loads(outcome_str)
         except (ValueError, TypeError):
@@ -455,7 +515,6 @@ class Volt(gl.Contract):
         if outcome_type not in ("full", "partial", "refund"):
             outcome_type = "refund"
         confidence = self._coerce_confidence(outcome.get("confidence", 0))
-        approved_amount_raw = outcome.get("approved_amount_usdc")
         reasoning = outcome.get("reasoning", "")
         if not isinstance(reasoning, str):
             reasoning = str(reasoning)
@@ -463,19 +522,26 @@ class Volt(gl.Contract):
         if confidence < CONFIDENCE_THRESHOLD:
             outcome_type = "refund"
 
-        if outcome_type == "refund":
-            approved_usdc = 0
-        elif approved_amount_raw is None:
-            # Same principle proven in Lumen: an omitted (not wrong) amount
-            # on an otherwise-valid approval isn't evidence of confusion --
-            # fall back to the requested amount for "full", 0 otherwise
-            # (never trusted to exceed the requested amount either way).
-            approved_usdc = requested_usdc if outcome_type == "full" else 0
-        else:
-            approved_usdc = self._coerce_int(approved_amount_raw)
-            if approved_usdc > requested_usdc:
+        # The exact USDC amount is never trusted as a free-typed model
+        # field. "full" and "refund" are fully deterministic (100% / 0% of
+        # the requested amount); "partial" is computed in contract code from
+        # a bucket the model can only choose from a fixed set of three --
+        # eliminating the class of bug where a materially different payout
+        # slips through under a superficially-matching qualitative verdict.
+        if outcome_type == "full":
+            approved_usdc = requested_usdc
+        elif outcome_type == "partial":
+            partial_percent = self._coerce_int(outcome.get("partial_percent", 0))
+            if partial_percent not in PARTIAL_PERCENT_BUCKETS:
+                # A "partial" verdict without one of the fixed, bindable
+                # buckets isn't a value we can trust -- refuse rather than
+                # guess at what the model meant.
                 outcome_type = "refund"
                 approved_usdc = 0
+            else:
+                approved_usdc = (requested_usdc * partial_percent) // 100
+        else:
+            approved_usdc = 0
 
         approved_units = approved_usdc * USDC_UNIT
         if outcome_type != "refund" and approved_units <= 0:
@@ -505,8 +571,13 @@ class Volt(gl.Contract):
         if claim_record.get("status") != "judged":
             raise gl.vm.UserError("CLAIM_NOT_JUDGED")
         channel_record = json.loads(self.channels[claim_record["channel_id"]])
-        caller = str(gl.message.sender_address)
-        if caller not in (channel_record.get("funder"), claim_record.get("claimant"), self.owner):
+        caller = self._addr(gl.message.sender_address)
+        authorized = {
+            self._addr(channel_record.get("funder", "")),
+            self._addr(claim_record.get("claimant", "")),
+            self._addr(self.owner),
+        }
+        if caller not in authorized:
             raise gl.vm.UserError("NOT_AUTHORIZED_TO_EXECUTE")
         if channel_record.get("status") != "active":
             raise gl.vm.UserError("CHANNEL_NOT_ACTIVE")
@@ -575,7 +646,7 @@ class Volt(gl.Contract):
     def set_relayer(self, new_relayer: str) -> None:
         self._require_owner()
         self._require_nonempty(new_relayer, "INVALID_RELAYER", max_len=100)
-        self.relayer = new_relayer
+        self.relayer = self._addr(new_relayer)
 
     @gl.public.write
     def pause_contract(self) -> None:
