@@ -1,6 +1,6 @@
 import { createClient, createAccount } from "genlayer-js";
 import { testnetBradbury, studionet } from "genlayer-js/chains";
-import { TransactionStatus, type CalldataEncodable, type Address } from "genlayer-js/types";
+import { TransactionStatus, ExecutionResult, type CalldataEncodable, type Address } from "genlayer-js/types";
 
 const CHAIN = process.env.NEXT_PUBLIC_GENLAYER_CHAIN === "studionet" ? studionet : testnetBradbury;
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_VOLT_CONTRACT_ADDRESS;
@@ -177,13 +177,26 @@ async function readContract<T = unknown>(functionName: string, args: CalldataEnc
 
 async function writeContract(functionName: string, args: CalldataEncodable[] = []): Promise<string> {
   const client = await getClient();
+  let hash: Awaited<ReturnType<typeof client.writeContract>>;
+  let receipt: Awaited<ReturnType<typeof client.waitForTransactionReceipt>>;
   try {
-    const hash = await client.writeContract({ address: requireContractAddress(), functionName, args, value: BigInt(0) });
-    await client.waitForTransactionReceipt({ hash, status: TransactionStatus.FINALIZED });
-    return hash;
+    hash = await client.writeContract({ address: requireContractAddress(), functionName, args, value: BigInt(0) });
+    receipt = await client.waitForTransactionReceipt({ hash, status: TransactionStatus.FINALIZED });
   } catch (err) {
     throw friendlyContractError(err);
   }
+  // waitForTransactionReceipt only confirms consensus reached the
+  // requested STATUS (FINALIZED) -- it never checks whether the contract's
+  // own execution actually succeeded. Consensus can validly finalize an
+  // AGREEMENT that a call reverted (e.g. a gl.vm.UserError inside
+  // judge_claim/execute_settlement), which would otherwise be silently
+  // treated as success here. Same class of gap GenLayer review flagged on
+  // a sibling project's decision-critical write flow: treat a finalized-
+  // but-reverted execution as a failure, not a success.
+  if (receipt.txExecutionResultName && receipt.txExecutionResultName !== ExecutionResult.FINISHED_WITH_RETURN) {
+    throw new Error("Transaction was finalized, but its execution did not succeed.");
+  }
+  return hash;
 }
 
 export interface Channel {
