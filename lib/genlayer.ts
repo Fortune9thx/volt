@@ -159,6 +159,16 @@ const ERROR_MESSAGES: Record<string, string> = {
  */
 export function friendlyContractError(err: unknown): Error {
   const raw = (err as { message?: string })?.message || String(err);
+  // A client-side polling-budget timeout (genlayer-js's own
+  // waitForTransactionReceipt giving up) is not a GenVM revert dump -- the
+  // regex below would otherwise extract "FINALIZED" out of this message
+  // and mangle it into the single word "finalized", hiding the real,
+  // actionable fact that the transaction may already have succeeded.
+  if (raw.includes("Timed out waiting for transaction")) {
+    return new Error(
+      "Bradbury is taking longer than usual to finalize this transaction. It may have already succeeded -- please wait a moment and refresh."
+    );
+  }
   const hexBytes = [...raw.matchAll(/0x([0-9a-fA-F]{1,2})\b/g)].map((m) => parseInt(m[1], 16));
   const decoded = hexBytes.length > 0 ? String.fromCharCode(...hexBytes) : "";
   const match = decoded.match(/\b([A-Z][A-Z0-9_]{4,})\b/) || raw.match(/\b([A-Z][A-Z0-9_]{4,})\b/);
@@ -183,7 +193,14 @@ async function writeContract(functionName: string, args: CalldataEncodable[] = [
   let receipt: Awaited<ReturnType<typeof client.waitForTransactionReceipt>>;
   try {
     hash = await client.writeContract({ address: requireContractAddress(), functionName, args, value: BigInt(0) });
-    receipt = await client.waitForTransactionReceipt({ hash, status: TransactionStatus.FINALIZED });
+    // The SDK's own default wait budget (10 retries x 3s = 30s) is far
+    // shorter than Bradbury's known finalization lag -- FINALIZED settles
+    // the appeal window and can take several minutes even for a write
+    // that already succeeded. A too-short budget here doesn't make a
+    // write any safer, it just surfaces a false, misleading timeout for
+    // calls that were actually fine. ~8 minutes matches the budget already
+    // proven necessary for this same network characteristic elsewhere.
+    receipt = await client.waitForTransactionReceipt({ hash, status: TransactionStatus.FINALIZED, interval: 5000, retries: 100 });
   } catch (err) {
     throw friendlyContractError(err);
   }
