@@ -147,6 +147,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   INVALID_EVIDENCE: "Evidence is required.",
   INVALID_REQUESTED_AMOUNT: "Enter a valid requested amount.",
   REQUESTED_AMOUNT_EXCEEDS_CHANNEL_BALANCE: "The requested amount exceeds this channel's locked balance.",
+  NOT_CHANNEL_PARTY: "You're not the funder or a listed party on this channel.",
   INVALID_SETTLEMENT_AMOUNT: "Invalid settlement amount.",
 };
 
