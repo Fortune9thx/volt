@@ -129,6 +129,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   CHANNEL_NOT_FOUND: "That channel could not be found.",
   CHANNEL_NOT_ACTIVE: "This channel is not active.",
   CHANNEL_NOT_CLOSING: "This channel isn't in the process of closing.",
+  CHANNEL_HAS_UNRESOLVED_CLAIMS: "This channel has a claim that hasn't been judged or executed yet — resolve it before closing.",
   NOT_CHANNEL_FUNDER: "You're not the funder of this channel.",
   CLAIM_NOT_FOUND: "That claim could not be found.",
   CLAIM_ALREADY_JUDGED: "This claim has already been judged.",
@@ -191,9 +192,15 @@ async function writeContract(functionName: string, args: CalldataEncodable[] = [
   // AGREEMENT that a call reverted (e.g. a gl.vm.UserError inside
   // judge_claim/execute_settlement), which would otherwise be silently
   // treated as success here. Same class of gap GenLayer review flagged on
-  // a sibling project's decision-critical write flow: treat a finalized-
-  // but-reverted execution as a failure, not a success.
-  if (receipt.txExecutionResultName && receipt.txExecutionResultName !== ExecutionResult.FINISHED_WITH_RETURN) {
+  // a sibling project's decision-critical write flow -- and that review
+  // caught a subtler version of this exact check done wrong: gating on
+  // `!== FINISHED_WITH_ERROR` (a deny-list) treats a MISSING or NOT_VOTED
+  // result as success too, since neither equals FINISHED_WITH_ERROR. This
+  // must be an allow-list instead -- require the result to be truthy AND
+  // exactly FINISHED_WITH_RETURN; anything else (ERROR, NOT_VOTED, or
+  // simply absent) fails closed, since FINALIZED implies execution has
+  // already happened and a real result should always be present by then.
+  if (receipt.txExecutionResultName !== ExecutionResult.FINISHED_WITH_RETURN) {
     throw new Error("Transaction was finalized, but its execution did not succeed.");
   }
   return hash;

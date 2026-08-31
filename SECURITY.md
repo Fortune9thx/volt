@@ -25,7 +25,7 @@ Volt is a **hybrid** system: GenLayer (Bradbury) is the ledger and judge — it 
 |---|---|---|
 | `create_channel` | none (permissionless — anyone may create a channel under their own Mandate) | input validation only |
 | `confirm_lock` | relayer only | `NOT_RELAYER` |
-| `close_channel` | caller must be the channel's `funder` | `NOT_CHANNEL_FUNDER` |
+| `close_channel` | caller must be the channel's `funder`, and no claim on the channel may still be `judged`-but-unexecuted | `NOT_CHANNEL_FUNDER` / `CHANNEL_HAS_UNRESOLVED_CLAIMS` |
 | `confirm_channel_closed` | relayer only | `NOT_RELAYER` |
 | `submit_claim` | caller must be the channel's `funder` or a listed `party` against an `active` channel | `NOT_CHANNEL_PARTY` / `CHANNEL_NOT_ACTIVE` |
 | `judge_claim` | permissionless trigger — the verdict carries no discretion for the caller, same reasoning as prior GenLayer builds' keeper pattern | — |
@@ -55,6 +55,7 @@ Every stored and compared address (`funder`, `parties`, `claimant`, `owner`, `re
 - `judge_claim`'s `outcome_str` is defensively parsed: non-JSON or non-dict output degrades to a safe `refund` default, never a crash or a default approval.
 - `outcome_type` is validated against a closed enum (`full`/`partial`/`refund`) — anything else coerces to `refund`.
 - `confidence` is requested as a quoted JSON string (GenVM calldata has no float type; a bare decimal in the model's own JSON output would become a Python `float` and fail at the next `gl_call` boundary).
+- **The frontend checks execution result, not just consensus status, before treating any write as successful.** `waitForTransactionReceipt` only confirms consensus reached the requested status (e.g. `FINALIZED`) — it never inspects whether the contract's own execution actually succeeded, since consensus can validly finalize an *agreement that a call reverted*. `lib/genlayer.ts`'s `writeContract` explicitly requires `txExecutionResultName === FINISHED_WITH_RETURN` as an allow-list check; anything else — `FINISHED_WITH_ERROR`, `NOT_VOTED`, or the field simply being absent — is treated as failure. This is deliberately an allow-list, not a deny-list (`!== FINISHED_WITH_ERROR`): a deny-list would silently treat a missing or `NOT_VOTED` result as success too, since neither equals `FINISHED_WITH_ERROR` — a real gap independently confirmed on a sibling GenLayer project's decision-critical write flow.
 
 ## State-machine invariants
 
@@ -62,6 +63,7 @@ Every stored and compared address (`funder`, `parties`, `claimant`, `owner`, `re
 - **Idempotent execution**: `execute_settlement` requires `claim.status == "judged"` — a claim can never be executed twice.
 - **Idempotent relay**: `mark_relayed` requires `status == "executed"` and `relayed == False`.
 - **Two-phase channel closure**: `close_channel` (funder) only moves a channel to `"closing"`, never directly to `"closed"` — the real USDC refund on Base hasn't happened yet at that point. Only the relayer's `confirm_channel_closed` (after executing the real Base-side refund) finalizes `"closed"`.
+- **Closure cannot bypass an already-decided verdict, but is never blocked on non-deterministic consensus converging**: `close_channel` reverts (`CHANNEL_HAS_UNRESOLVED_CLAIMS`) if any claim on the channel is still `"judged"`-but-unexecuted — otherwise a funder could close the channel the instant a claim is judged in the claimant's favor but before `execute_settlement` runs (both require an `"active"` channel, and closure never reverts to `"active"`). Deliberately **not** blocked on a merely `"pending"` claim: `judge_claim`'s own resolution depends on non-deterministic consensus (`run_nondet_unsafe` / `prompt_comparative`), which is not guaranteed to ever converge no matter how many times it's retried — blocking closure on it would let a single claim with unstable evidence strand the channel's entire remaining balance forever, with no escape hatch (the exact liveness anti-pattern GenLayer review has flagged on a sibling project's staked-proposal design). A `"judged"` claim carries no such risk since `execute_settlement` is a plain deterministic write the funder can always call themselves. Proven by `tests/direct/test_access_control_matrix.py` (allowed despite a pending claim, blocked while judged-unexecuted, allowed again once executed or rejected).
 - **Idempotent cross-chain events**: every relayer-facing method requires a fresh `base_tx_hash` via `processed_tx_hashes` — the same Base transaction can never be mirrored into GenLayer's ledger twice.
 
 ## Fund safety

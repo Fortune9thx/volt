@@ -153,6 +153,70 @@ class TestAccessControlMatrix:
         assert [c["id"] for c in via_lower] == [channel_id]
         assert [c["id"] for c in via_upper] == [channel_id]
 
+    def test_close_channel_allowed_despite_pending_claim(self, contract, direct_vm, direct_owner, direct_alice, direct_bob):
+        # A "pending" claim must NOT block closure. judge_claim's own
+        # resolution depends on non-deterministic consensus, which is not
+        # guaranteed to ever converge -- blocking closure on it would let a
+        # single claim with unstable evidence strand the channel's entire
+        # remaining balance forever, with no escape hatch. Only a "judged"
+        # claim (deterministically resolvable by the funder themselves via
+        # execute_settlement) blocks closure -- see the next test.
+        channel_id = _create_and_fund_channel(contract, direct_vm, direct_alice, direct_owner, parties=f"{str(direct_alice)},{str(direct_bob)}")
+        direct_vm.sender = direct_bob
+        contract.submit_claim(channel_id=channel_id, evidence="https://example.com/e", requested_amount_usdc=100)
+        direct_vm.sender = direct_alice
+        contract.close_channel(channel_id=channel_id)
+        channel = json.loads(contract.get_channel(channel_id=channel_id))
+        assert channel["status"] == "closing"
+
+    def test_close_channel_blocked_by_judged_but_unexecuted_claim(self, contract, direct_vm, direct_owner, direct_alice, direct_bob):
+        # Real griefing vector this closes: without this guard, a funder
+        # could close_channel the instant a claim is judged in the
+        # claimant's favor but before execute_settlement runs, permanently
+        # blocking payout since judge_claim/execute_settlement both require
+        # an "active" channel and closure never reverts to "active".
+        channel_id = _create_and_fund_channel(contract, direct_vm, direct_alice, direct_owner, parties=f"{str(direct_alice)},{str(direct_bob)}")
+        direct_vm.sender = direct_bob
+        claim_id = contract.submit_claim(channel_id=channel_id, evidence="https://example.com/e", requested_amount_usdc=100)
+        mock_two_stage_judgment(
+            direct_vm,
+            facts={"fetch_ok": True, "supports_claim": True},
+            intent={"outcome_type": "full", "confidence": "0.95", "reasoning": "Confirmed."},
+        )
+        contract.judge_claim(claim_id=claim_id)
+        direct_vm.sender = direct_alice
+        with pytest.raises(Exception):
+            contract.close_channel(channel_id=channel_id)
+        channel = json.loads(contract.get_channel(channel_id=channel_id))
+        assert channel["status"] == "active"
+
+    def test_close_channel_succeeds_once_claim_is_executed(self, contract, direct_vm, direct_owner, direct_alice, direct_bob):
+        channel_id = _create_and_fund_channel(contract, direct_vm, direct_alice, direct_owner, parties=f"{str(direct_alice)},{str(direct_bob)}")
+        direct_vm.sender = direct_bob
+        claim_id = contract.submit_claim(channel_id=channel_id, evidence="https://example.com/e", requested_amount_usdc=100)
+        mock_two_stage_judgment(
+            direct_vm,
+            facts={"fetch_ok": True, "supports_claim": True},
+            intent={"outcome_type": "full", "confidence": "0.95", "reasoning": "Confirmed."},
+        )
+        contract.judge_claim(claim_id=claim_id)
+        contract.execute_settlement(claim_id=claim_id)
+        direct_vm.sender = direct_alice
+        contract.close_channel(channel_id=channel_id)
+        channel = json.loads(contract.get_channel(channel_id=channel_id))
+        assert channel["status"] == "closing"
+
+    def test_close_channel_succeeds_once_claim_is_rejected(self, contract, direct_vm, direct_owner, direct_alice, direct_bob):
+        channel_id = _create_and_fund_channel(contract, direct_vm, direct_alice, direct_owner, parties=f"{str(direct_alice)},{str(direct_bob)}")
+        direct_vm.sender = direct_bob
+        claim_id = contract.submit_claim(channel_id=channel_id, evidence="not a url at all", requested_amount_usdc=100)
+        direct_vm.clear_mocks()
+        contract.judge_claim(claim_id=claim_id)  # fails closed -> "rejected", not blocking
+        direct_vm.sender = direct_alice
+        contract.close_channel(channel_id=channel_id)
+        channel = json.loads(contract.get_channel(channel_id=channel_id))
+        assert channel["status"] == "closing"
+
     def test_non_owner_cannot_set_relayer(self, contract, direct_vm, direct_bob, direct_owner):
         direct_vm.sender = direct_bob
         with pytest.raises(Exception):

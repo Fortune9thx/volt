@@ -82,6 +82,30 @@ class Volt(gl.Contract):
         if self._addr(gl.message.sender_address) != self._addr(self.relayer):
             raise gl.vm.UserError("NOT_RELAYER")
 
+    def _has_unresolved_claims(self, channel_id: str) -> bool:
+        # Only a "judged"-but-unexecuted claim blocks closure -- NOT a
+        # "pending" one. Without blocking on "judged", a funder could
+        # close_channel the moment a claim is judged in the claimant's
+        # favor but before it's executed (judge_claim/execute_settlement
+        # both require status == "active", and closure never reverts to
+        # "active"), permanently blocking payout of an already-resolved
+        # verdict. But blocking on "pending" too would be a NEW, worse bug:
+        # judge_claim's own resolution is non-deterministic consensus
+        # (gl.vm.run_nondet_unsafe / prompt_comparative), which GenLayer
+        # review has explicitly warned may never converge no matter how
+        # many times it's retried -- a single claim with unstable evidence
+        # could then strand the channel's ENTIRE remaining balance forever,
+        # with no escape hatch. A "judged" claim has no such risk:
+        # execute_settlement is a plain deterministic write the funder can
+        # always call themselves, so blocking on it is always boundedly
+        # resolvable. See SECURITY.md.
+        ids = json.loads(self.claim_ids)
+        for cid in ids:
+            rec = json.loads(self.claims[cid])
+            if rec.get("channel_id") == channel_id and rec.get("status") == "judged":
+                return True
+        return False
+
     def _is_channel_party(self, record: dict, address) -> bool:
         # True if `address` is the channel's funder or one of its
         # comma-separated `parties`. Used to gate submit_claim -- without
@@ -340,6 +364,8 @@ class Volt(gl.Contract):
             raise gl.vm.UserError("NOT_CHANNEL_FUNDER")
         if record.get("status") != "active":
             raise gl.vm.UserError("CHANNEL_NOT_ACTIVE")
+        if self._has_unresolved_claims(channel_id):
+            raise gl.vm.UserError("CHANNEL_HAS_UNRESOLVED_CLAIMS")
         record["status"] = "closing"
         self.channels[channel_id] = json.dumps(record)
 
