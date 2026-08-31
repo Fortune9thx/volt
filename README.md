@@ -3,7 +3,7 @@
 **Settlement that only moves when reality agrees.**
 
 **Live app:** [volt-x9.vercel.app](https://volt-x9.vercel.app)
-**Live contract (GenLayer Bradbury):** [`0xb1B069ED061f355cEd3592f1aD82c627c2e8D51E`](https://explorer-bradbury.genlayer.com/address/0xb1B069ED061f355cEd3592f1aD82c627c2e8D51E)
+**Live contract (GenLayer Bradbury):** [`0x04d42294a674e811549a28ee9497D08D23B409Dc`](https://explorer-bradbury.genlayer.com/address/0x04d42294a674e811549a28ee9497D08D23B409Dc)
 **Live escrow (Base Sepolia):** [`0x60d692A8731E90A241605644A653ECdCfa31D549`](https://sepolia.basescan.org/address/0x60d692A8731E90A241605644A653ECdCfa31D549)
 
 ## What Volt does
@@ -42,7 +42,7 @@ evm/contracts/test/MockUSDC.sol    Test-only ERC-20 for Hardhat's local test sui
 scripts/relayer.mjs                The trusted bridge between both chains
 scripts/deploy.mjs                 Deploys Volt.py to GenLayer
 evm/scripts/deploy.ts              Deploys VoltEscrow.sol to Base Sepolia
-tests/direct/                      gltest suite (12 tests)
+tests/direct/                      gltest suite (26 tests)
 evm/test/                          Hardhat suite (8 tests)
 app/                               Next.js 16 App Router pages
 lib/genlayer.ts                    genlayer-js client + typed contract wrappers
