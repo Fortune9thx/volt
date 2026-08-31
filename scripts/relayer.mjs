@@ -49,6 +49,30 @@ const ESCROW_ABI = parseAbi([
   "event FundsLocked(bytes32 indexed channelId, address indexed funder, uint256 amount)",
 ])
 
+// Base Sepolia's public RPC caps eth_getLogs at a 10,000-block range per
+// call (confirmed live: "eth_getLogs is limited to a 10,000 range") --
+// fromBlock: "earliest" silently failed every single cycle. The relayer's
+// own stated design re-scans full history every cycle rather than keeping
+// a persistent "last scanned block" file (crash-safe, nothing to lose or
+// corrupt) -- this preserves that, just chunked to respect the RPC limit.
+// RELAYER_DEPLOY_BLOCK overrides the default if VoltEscrow is redeployed.
+const ESCROW_DEPLOY_BLOCK = BigInt(process.env.RELAYER_DEPLOY_BLOCK || process.env.RELAYER_FROM_BLOCK || 45965409n)
+const GETLOGS_CHUNK_SIZE = 9000n
+
+async function getFundsLockedLogs() {
+  const latest = await basePublic.getBlockNumber()
+  const logs = []
+  for (let from = ESCROW_DEPLOY_BLOCK; from <= latest; from += GETLOGS_CHUNK_SIZE) {
+    const to = from + GETLOGS_CHUNK_SIZE - 1n > latest ? latest : from + GETLOGS_CHUNK_SIZE - 1n
+    const chunk = await basePublic.getContractEvents({
+      address: escrowAddress, abi: ESCROW_ABI, eventName: "FundsLocked",
+      fromBlock: from, toBlock: to,
+    })
+    logs.push(...chunk)
+  }
+  return logs
+}
+
 /** Mirrors Volt.py's plain string ids ("chn_1", "clm_1") into the bytes32
  * VoltEscrow uses as its mapping key -- both sides must derive this
  * identically, or a lock/settlement will silently land under the wrong key. */
@@ -81,13 +105,7 @@ async function readAllClaims() {
 /** Leg 1: Base -> GenLayer. Find real FundsLocked events not yet mirrored. */
 async function relayLocksToGenlayer() {
   const channels = await readAllChannels()
-  const logs = await basePublic.getContractEvents({
-    address: escrowAddress,
-    abi: ESCROW_ABI,
-    eventName: "FundsLocked",
-    fromBlock: process.env.RELAYER_FROM_BLOCK ? BigInt(process.env.RELAYER_FROM_BLOCK) : "earliest",
-    toBlock: "latest",
-  })
+  const logs = await getFundsLockedLogs()
   for (const log of logs) {
     const matchingChannel = channels.find((c) => toChannelIdBytes32(c.id) === log.args.channelId)
     if (!matchingChannel) continue
