@@ -7,7 +7,7 @@ import { Card } from "@/components/Card";
 import { FormField, Input, Textarea } from "@/components/FormField";
 import { Button } from "@/components/Button";
 import { useWallet } from "@/lib/WalletContext";
-import { submitClaim } from "@/lib/genlayer";
+import { submitClaim, formatWriteStatus } from "@/lib/genlayer";
 import { validate, isValidWholeUsdcAmount } from "@/lib/validation";
 
 interface ClaimForm {
@@ -29,6 +29,7 @@ function SubmitClaimForm() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
 
   const set = (key: keyof ClaimForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [key]: e.target.value }));
@@ -42,10 +43,15 @@ function SubmitClaimForm() {
     try {
       if (!address) await connect();
       setSubmitting(true);
-      const claimId = await submitClaim({ channelId, evidence: form.evidence, requestedAmountUsdc: Number(form.requestedAmountUsdc) });
+      setStatus(formatWriteStatus("SUBMITTED"));
+      const claimId = await submitClaim(
+        { channelId, evidence: form.evidence, requestedAmountUsdc: Number(form.requestedAmountUsdc) },
+        (statusName) => setStatus(formatWriteStatus(statusName))
+      );
       router.push(`/claims/${claimId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit claim");
+      setStatus(null);
     } finally {
       setSubmitting(false);
     }
@@ -75,6 +81,7 @@ function SubmitClaimForm() {
             <Input type="number" min="1" placeholder="500" value={form.requestedAmountUsdc} onChange={set("requestedAmountUsdc")} />
           </FormField>
           {error && <p className="text-sm text-danger">{error}</p>}
+          {submitting && status && <p className="text-sm text-text-secondary">{status}</p>}
           <Button className="w-full" onClick={handleSubmit} disabled={submitting || !channelId}>
             {submitting ? "Submitting…" : address ? "Submit Claim" : "Connect Wallet to Continue"}
           </Button>

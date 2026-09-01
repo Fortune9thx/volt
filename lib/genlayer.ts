@@ -187,38 +187,75 @@ async function readContract<T = unknown>(functionName: string, args: CalldataEnc
   }
 }
 
-async function writeContract(functionName: string, args: CalldataEncodable[] = []): Promise<string> {
+// judge_claim in particular runs FOUR separate consensus rounds (Stage A
+// leader+validator fetch/extract, Stage B leader+validator judge) and can
+// legitimately take several minutes on Bradbury. A flat, silent await with
+// no progress feedback looks indistinguishable from "stuck" for that whole
+// window -- onStatus lets callers show what's actually happening instead
+// of a static label that never changes.
+const POLL_INTERVAL_MS = 5000;
+const POLL_MAX_ATTEMPTS = 100; // ~8 minutes, matching Bradbury's known finalization lag
+const FAILURE_STATUS_NAMES = new Set(["UNDETERMINED", "CANCELED", "VALIDATORS_TIMEOUT", "LEADER_TIMEOUT"]);
+
+export class TransactionTimeoutError extends Error {
+  constructor() {
+    super("Still finalizing on-chain -- this can take a few minutes on Bradbury. Refresh in a moment to check.");
+    this.name = "TransactionTimeoutError";
+  }
+}
+
+async function pollUntilFinalized(
+  client: Awaited<ReturnType<typeof getClient>>,
+  hash: Awaited<ReturnType<typeof client.writeContract>>,
+  onStatus?: (statusName: string) => void
+) {
+  let lastStatus: string | null = null;
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    const tx = await client.getTransaction({ hash });
+    const statusName = String((tx as { statusName?: string }).statusName ?? "PENDING");
+    if (statusName !== lastStatus) {
+      onStatus?.(statusName);
+      lastStatus = statusName;
+    }
+    if (statusName === "FINALIZED") return tx;
+    if (FAILURE_STATUS_NAMES.has(statusName)) {
+      throw new Error(`Transaction did not succeed (status: ${statusName}).`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+  throw new TransactionTimeoutError();
+}
+
+async function writeContract(
+  functionName: string,
+  args: CalldataEncodable[] = [],
+  onStatus?: (statusName: string) => void
+): Promise<string> {
   const client = await getClient();
   let hash: Awaited<ReturnType<typeof client.writeContract>>;
-  let receipt: Awaited<ReturnType<typeof client.waitForTransactionReceipt>>;
+  let tx: Awaited<ReturnType<typeof client.getTransaction>>;
   try {
+    onStatus?.("SUBMITTED");
     hash = await client.writeContract({ address: requireContractAddress(), functionName, args, value: BigInt(0) });
-    // The SDK's own default wait budget (10 retries x 3s = 30s) is far
-    // shorter than Bradbury's known finalization lag -- FINALIZED settles
-    // the appeal window and can take several minutes even for a write
-    // that already succeeded. A too-short budget here doesn't make a
-    // write any safer, it just surfaces a false, misleading timeout for
-    // calls that were actually fine. ~8 minutes matches the budget already
-    // proven necessary for this same network characteristic elsewhere.
-    receipt = await client.waitForTransactionReceipt({ hash, status: TransactionStatus.FINALIZED, interval: 5000, retries: 100 });
+    tx = await pollUntilFinalized(client, hash, onStatus);
   } catch (err) {
     throw friendlyContractError(err);
   }
-  // waitForTransactionReceipt only confirms consensus reached the
-  // requested STATUS (FINALIZED) -- it never checks whether the contract's
-  // own execution actually succeeded. Consensus can validly finalize an
-  // AGREEMENT that a call reverted (e.g. a gl.vm.UserError inside
-  // judge_claim/execute_settlement), which would otherwise be silently
-  // treated as success here. Same class of gap GenLayer review flagged on
-  // a sibling project's decision-critical write flow -- and that review
-  // caught a subtler version of this exact check done wrong: gating on
-  // `!== FINISHED_WITH_ERROR` (a deny-list) treats a MISSING or NOT_VOTED
-  // result as success too, since neither equals FINISHED_WITH_ERROR. This
-  // must be an allow-list instead -- require the result to be truthy AND
-  // exactly FINISHED_WITH_RETURN; anything else (ERROR, NOT_VOTED, or
-  // simply absent) fails closed, since FINALIZED implies execution has
-  // already happened and a real result should always be present by then.
-  if (receipt.txExecutionResultName !== ExecutionResult.FINISHED_WITH_RETURN) {
+  // Reaching FINALIZED only confirms consensus reached that STATUS -- it
+  // never checks whether the contract's own execution actually succeeded.
+  // Consensus can validly finalize an AGREEMENT that a call reverted (e.g.
+  // a gl.vm.UserError inside judge_claim/execute_settlement), which would
+  // otherwise be silently treated as success here. Same class of gap
+  // GenLayer review flagged on a sibling project's decision-critical write
+  // flow -- and that review caught a subtler version of this exact check
+  // done wrong: gating on `!== FINISHED_WITH_ERROR` (a deny-list) treats a
+  // MISSING or NOT_VOTED result as success too, since neither equals
+  // FINISHED_WITH_ERROR. This must be an allow-list instead -- require the
+  // result to be truthy AND exactly FINISHED_WITH_RETURN; anything else
+  // (ERROR, NOT_VOTED, or simply absent) fails closed, since FINALIZED
+  // implies execution has already happened and a real result should
+  // always be present by then.
+  if ((tx as { txExecutionResultName?: ExecutionResult }).txExecutionResultName !== ExecutionResult.FINISHED_WITH_RETURN) {
     throw new Error("Transaction was finalized, but its execution did not succeed.");
   }
   return hash;
@@ -252,14 +289,30 @@ export interface Claim {
   verified_facts?: { fetch_ok: boolean; supports_claim: boolean; facts_summary: string };
 }
 
+/** Turns a raw consensus status name into a reassuring, human-readable
+ * line for a live progress display -- a write can spend real minutes in
+ * ACCEPTED before FINALIZED lands, and a static unchanging label during
+ * that whole window looks indistinguishable from "stuck." */
+export function formatWriteStatus(statusName: string): string {
+  if (statusName === "SUBMITTED") return "Submitting transaction…";
+  if (statusName === "ACCEPTED") {
+    return "Accepted — waiting for finalization (this can take a few minutes on Bradbury, the transaction already succeeded)…";
+  }
+  if (statusName === "FINALIZED") return "Finalized.";
+  return `Status: ${statusName}…`;
+}
+
 export const USDC_UNIT = 1_000_000;
 
 export function unitsToUsdc(units: string | number): number {
   return Math.floor(Number(units) / USDC_UNIT);
 }
 
-export async function createChannel(params: { mandate: string; parties: string; expiry: string }): Promise<string> {
-  return writeContract("create_channel", [params.mandate, params.parties, params.expiry]);
+export async function createChannel(
+  params: { mandate: string; parties: string; expiry: string },
+  onStatus?: (statusName: string) => void
+): Promise<string> {
+  return writeContract("create_channel", [params.mandate, params.parties, params.expiry], onStatus);
 }
 
 export async function getChannel(channelId: string): Promise<Channel> {
@@ -277,20 +330,23 @@ export async function getAllChannelIds(): Promise<string[]> {
   return JSON.parse(raw);
 }
 
-export async function closeChannel(channelId: string): Promise<string> {
-  return writeContract("close_channel", [channelId]);
+export async function closeChannel(channelId: string, onStatus?: (statusName: string) => void): Promise<string> {
+  return writeContract("close_channel", [channelId], onStatus);
 }
 
-export async function submitClaim(params: { channelId: string; evidence: string; requestedAmountUsdc: number }): Promise<string> {
-  return writeContract("submit_claim", [params.channelId, params.evidence, params.requestedAmountUsdc]);
+export async function submitClaim(
+  params: { channelId: string; evidence: string; requestedAmountUsdc: number },
+  onStatus?: (statusName: string) => void
+): Promise<string> {
+  return writeContract("submit_claim", [params.channelId, params.evidence, params.requestedAmountUsdc], onStatus);
 }
 
-export async function judgeClaim(claimId: string): Promise<string> {
-  return writeContract("judge_claim", [claimId]);
+export async function judgeClaim(claimId: string, onStatus?: (statusName: string) => void): Promise<string> {
+  return writeContract("judge_claim", [claimId], onStatus);
 }
 
-export async function executeSettlement(claimId: string): Promise<string> {
-  return writeContract("execute_settlement", [claimId]);
+export async function executeSettlement(claimId: string, onStatus?: (statusName: string) => void): Promise<string> {
+  return writeContract("execute_settlement", [claimId], onStatus);
 }
 
 export async function getClaim(claimId: string): Promise<Claim> {

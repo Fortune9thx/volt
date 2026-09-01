@@ -7,7 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { Card } from "@/components/Card";
 import { Button } from "@/components/Button";
 import { StatusPill } from "@/components/StatusPill";
-import { getClaim, judgeClaim, executeSettlement, unitsToUsdc, type Claim } from "@/lib/genlayer";
+import { getClaim, judgeClaim, executeSettlement, unitsToUsdc, formatWriteStatus, type Claim } from "@/lib/genlayer";
 
 const STEPS = ["Submitted", "Evidence fetched", "Judged", "Executed"] as const;
 
@@ -25,6 +25,8 @@ export default function ClaimDetail() {
   const [error, setError] = useState<string | null>(null);
   const [judging, setJudging] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [judgeStatus, setJudgeStatus] = useState<string | null>(null);
+  const [executeStatus, setExecuteStatus] = useState<string | null>(null);
 
   const load = useCallback(() => {
     getClaim(id).then(setClaim).catch((err) => setError(err.message));
@@ -37,11 +39,14 @@ export default function ClaimDetail() {
   const handleJudge = async () => {
     setJudging(true);
     setError(null);
+    setJudgeStatus(formatWriteStatus("SUBMITTED"));
     try {
-      await judgeClaim(id);
+      await judgeClaim(id, (statusName) => setJudgeStatus(formatWriteStatus(statusName)));
       load();
+      setJudgeStatus(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Judgment failed");
+      setJudgeStatus(null);
     } finally {
       setJudging(false);
     }
@@ -50,11 +55,14 @@ export default function ClaimDetail() {
   const handleExecute = async () => {
     setExecuting(true);
     setError(null);
+    setExecuteStatus(formatWriteStatus("SUBMITTED"));
     try {
-      await executeSettlement(id);
+      await executeSettlement(id, (statusName) => setExecuteStatus(formatWriteStatus(statusName)));
       load();
+      setExecuteStatus(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Execution failed");
+      setExecuteStatus(null);
     } finally {
       setExecuting(false);
     }
@@ -153,6 +161,9 @@ export default function ClaimDetail() {
           )}
 
           {error && <p className="text-sm text-danger">{error}</p>}
+          {(judgeStatus || executeStatus) && (
+            <p className="text-sm text-text-secondary">{judgeStatus || executeStatus}</p>
+          )}
 
           <div className="flex gap-4">
             {claim.status === "pending" && (

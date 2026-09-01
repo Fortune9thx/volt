@@ -9,7 +9,7 @@ import { Button } from "@/components/Button";
 import { StatusPill } from "@/components/StatusPill";
 import { FormField, Input } from "@/components/FormField";
 import { useWallet } from "@/lib/WalletContext";
-import { getChannel, listClaimsByChannel, closeChannel, unitsToUsdc, type Channel, type Claim } from "@/lib/genlayer";
+import { getChannel, listClaimsByChannel, closeChannel, unitsToUsdc, formatWriteStatus, type Channel, type Claim } from "@/lib/genlayer";
 import { lockFundsOnBase } from "@/lib/base";
 import type { Address } from "viem";
 
@@ -23,6 +23,8 @@ export default function ChannelDetail() {
   const [lockAmount, setLockAmount] = useState("");
   const [locking, setLocking] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [closeStatus, setCloseStatus] = useState<string | null>(null);
+  const [lockSuccess, setLockSuccess] = useState<string | null>(null);
 
   const load = useCallback(() => {
     getChannel(id).then(setChannel).catch((err) => setError(err.message));
@@ -36,12 +38,19 @@ export default function ChannelDetail() {
   const handleLock = async () => {
     if (!address || !lockAmount) return;
     setError(null);
+    setLockSuccess(null);
     setLocking(true);
     try {
+      const amountLocked = lockAmount;
       await lockFundsOnBase(address as Address, id, Number(lockAmount));
       setLockAmount("");
-      // The relayer needs a moment to observe and mirror the lock -- a
-      // manual refresh a few seconds later will show the updated balance.
+      // The relayer needs a moment to observe and mirror the lock -- load()
+      // here would just show the same stale balance, since the mirror
+      // hasn't landed yet. A clear success message stands in for that gap
+      // instead of leaving the form looking like nothing happened.
+      setLockSuccess(
+        `Locked ${amountLocked} USDC on Base. Volt's relayer mirrors this into the channel within ~15-20s -- refresh in a moment to see the updated balance.`
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to lock funds on Base");
     } finally {
@@ -52,11 +61,14 @@ export default function ChannelDetail() {
   const handleClose = async () => {
     setClosing(true);
     setError(null);
+    setCloseStatus(formatWriteStatus("SUBMITTED"));
     try {
-      await closeChannel(id);
+      await closeChannel(id, (statusName) => setCloseStatus(formatWriteStatus(statusName)));
       load();
+      setCloseStatus(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to close channel");
+      setCloseStatus(null);
     } finally {
       setClosing(false);
     }
@@ -110,6 +122,7 @@ export default function ChannelDetail() {
           </div>
 
           {error && <p className="text-sm text-danger">{error}</p>}
+          {closeStatus && <p className="text-sm text-text-secondary">{closeStatus}</p>}
 
           <div>
             <h2 className="text-sm font-semibold text-text-muted uppercase tracking-wide mb-4">Claims</h2>
@@ -147,6 +160,7 @@ export default function ChannelDetail() {
               <Button className="w-full mt-4" onClick={handleLock} disabled={locking || !lockAmount || !address}>
                 {locking ? "Locking on Base…" : "Lock Funds"}
               </Button>
+              {lockSuccess && <p className="mt-3 text-xs text-teal-600 leading-relaxed">{lockSuccess}</p>}
             </Card>
           )}
           <Card hover={false} className="text-xs text-text-muted space-y-2">

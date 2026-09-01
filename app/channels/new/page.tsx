@@ -7,7 +7,7 @@ import { Card } from "@/components/Card";
 import { FormField, Input, Textarea } from "@/components/FormField";
 import { Button } from "@/components/Button";
 import { useWallet } from "@/lib/WalletContext";
-import { createChannel } from "@/lib/genlayer";
+import { createChannel, formatWriteStatus } from "@/lib/genlayer";
 import { validate } from "@/lib/validation";
 
 interface ChannelForm {
@@ -29,6 +29,7 @@ export default function CreateChannel() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
 
   const set = (key: keyof ChannelForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [key]: e.target.value }));
@@ -43,11 +44,16 @@ export default function CreateChannel() {
       let addr = address;
       if (!addr) addr = await connect();
       setSubmitting(true);
+      setStatus(formatWriteStatus("SUBMITTED"));
       const parties = form.parties.includes(addr) ? form.parties : `${addr},${form.parties}`;
-      const channelId = await createChannel({ mandate: form.mandate, parties, expiry: form.expiry });
+      const channelId = await createChannel(
+        { mandate: form.mandate, parties, expiry: form.expiry },
+        (statusName) => setStatus(formatWriteStatus(statusName))
+      );
       router.push(`/channels/${channelId}?justCreated=1`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create channel");
+      setStatus(null);
     } finally {
       setSubmitting(false);
     }
@@ -82,6 +88,7 @@ export default function CreateChannel() {
             Sepolia against this channel&rsquo;s id — Volt&rsquo;s relayer mirrors that lock here once it&rsquo;s confirmed.
           </p>
           {error && <p className="text-sm text-danger">{error}</p>}
+          {submitting && status && <p className="text-sm text-text-secondary">{status}</p>}
           <Button className="w-full" onClick={handleSubmit} disabled={submitting}>
             {submitting ? "Creating…" : address ? "Create Channel" : "Connect Wallet to Continue"}
           </Button>
