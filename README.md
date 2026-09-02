@@ -31,7 +31,7 @@ GenLayer cannot call or verify state on a separate chain natively — there's no
 
 - **GenLayer (Bradbury)** — `contracts/Volt.py` is the **ledger and judge**. It never custodies real funds; `channel.balance_units` mirrors what's actually locked on Base. Two-stage judgment: Stage A fetches and verifies the claimant's own evidence (fail-closed); Stage B (`gl.eq_principle.prompt_comparative`) judges the Mandate's intent against those already-agreed facts, binding the exact payout to a small set of consensus-checkable buckets rather than a free-typed model number (see SECURITY.md).
 - **Base Sepolia** — `evm/contracts/VoltEscrow.sol` is the **vault**. It holds the real USDC (OpenZeppelin `SafeERC20` + `ReentrancyGuard`, full CEI ordering).
-- **`scripts/relayer.mjs`** — a **trusted relayer** bridges both directions: it observes real `FundsLocked` events on Base and mirrors them into GenLayer (`confirm_lock`), and executes GenLayer's already-finalized verdicts as real Base-side transfers (`settle`/`refundChannel`), reporting back via `mark_relayed`.
+- **`scripts/relayer.mjs`** — a **trusted relayer** bridges both directions: it observes real `FundsLocked` events on Base and mirrors them into GenLayer (`confirm_lock`), and proposes GenLayer's already-finalized verdicts as real Base-side transfers (`proposeSettlement`/`proposeRefund`) — which execute only after a challenge window during which the channel's funder can independently verify and dispute a wrong proposal — reporting back via `mark_relayed`.
 
 **This is disclosed explicitly as a trusted bridge, not a trust-minimized one** — the relayer has no independent judgment (it can only ever execute a verdict GenLayer's own consensus already reached), but it is a real, single point of trust for the mirroring step. See `SECURITY.md`'s "Trust model" for the full disclosure, including exactly what a compromised relayer could and couldn't do.
 
@@ -42,8 +42,8 @@ evm/contracts/test/MockUSDC.sol    Test-only ERC-20 for Hardhat's local test sui
 scripts/relayer.mjs                The trusted bridge between both chains
 scripts/deploy.mjs                 Deploys Volt.py to GenLayer
 evm/scripts/deploy.ts              Deploys VoltEscrow.sol to Base Sepolia
-tests/direct/                      gltest suite (31 tests)
-evm/test/                          Hardhat suite (8 tests)
+tests/direct/                      gltest suite (36 tests)
+evm/test/                          Hardhat suite (18 tests)
 lib/genlayer.test.ts               Vitest suite: return-value decoding, id recovery
 app/                               Next.js 16 App Router pages
 lib/genlayer.ts                    genlayer-js client + typed contract wrappers
@@ -98,6 +98,8 @@ Never trust a deploy script's own success message alone — `scripts/peek-tx.mjs
 Full detail in [SECURITY.md](./SECURITY.md). In summary:
 
 - **Fetch-and-authenticate evidence, not a free assertion** — Stage A fetches every evidence URL the claimant submits themselves, in contract code, before any LLM interpretation; a claim with unfetchable evidence fails closed.
+- **Optional, opt-in evidence source restriction** — a channel's funder may agree an evidence-domain allowlist upfront, at creation, before either party has a stake in a specific claim.
+- **Base-side settlement is propose-then-execute, not instant** — a challenge window gives the channel's funder a real, on-chain chance to independently verify and dispute a wrong relayer proposal before any transfer happens.
 - **Two-stage, confidence-gated judgment** — Stage B never runs unless Stage A's independent leader/validator extraction agrees the evidence is real and on-topic.
 - **Idempotent bridge in both directions** — every relayer-facing method (`confirm_lock`, `mark_relayed`, `confirm_channel_closed`) is guarded by a processed-tx-hash ledger; a retried or duplicated relayer call can never double-count a lock or double-execute a settlement.
 - **Two-phase channel closure** — `close_channel` only moves a channel to `"closing"`; only the relayer's `confirm_channel_closed`, after the real Base-side refund executes, finalizes `"closed"`.

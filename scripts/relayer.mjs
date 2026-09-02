@@ -8,10 +8,20 @@
  * bridge -- there is no light client verifying either chain's state from
  * the other.
  *
+ * Base-side settlement/refund is a two-step propose -> execute flow
+ * separated by VoltEscrow's challengeWindow: this relayer only ever
+ * PROPOSES what it read off GenLayer's own finalized verdict, then
+ * executes it once the window elapses unopposed. The channel's funder can
+ * independently read the same GenLayer record and dispute a wrong
+ * proposal before it executes -- if that happens, this relayer just
+ * re-proposes the same GenLayer-derived values (it has no separate
+ * judgment to fall back on; a repeated dispute means the mismatch needs
+ * manual/owner resolution, outside this script's scope).
+ *
  * Stateless by design: every write on both sides is independently
  * idempotent (Volt.py's processed_tx_hashes / claim.relayed guard the
- * GenLayer side; VoltEscrow's claimSettled mapping guards the Base side),
- * so this script can safely re-scan everything on every cycle rather than
+ * GenLayer side; VoltEscrow's pendingSettlements guard the Base side), so
+ * this script can safely re-scan everything on every cycle rather than
  * keeping its own persistent "already handled" database. A crash or
  * restart loses no state and double-processes nothing.
  *
@@ -44,8 +54,11 @@ const basePublic = createPublicClient({ chain: baseSepolia, transport: http(proc
 const baseWallet = createWalletClient({ chain: baseSepolia, transport: http(process.env.BASE_SEPOLIA_RPC_URL), account: baseAccount })
 
 const ESCROW_ABI = parseAbi([
-  "function settle(bytes32 channelId, bytes32 claimId, address recipient, uint256 amount, string kind) external",
-  "function refundChannel(bytes32 channelId, address recipient) external returns (uint256)",
+  "function proposeSettlement(bytes32 claimId, bytes32 channelId, address recipient, uint256 amount, string kind) external",
+  "function proposeRefund(bytes32 channelId, address recipient) external returns (uint256)",
+  "function executeSettlement(bytes32 key) external",
+  "function challengeWindow() external view returns (uint256)",
+  "function getPendingSettlement(bytes32 key) external view returns ((bytes32 channelId, address recipient, uint256 amount, string kind, uint256 proposedAt, bool disputed, bool executed))",
   "event FundsLocked(bytes32 indexed channelId, address indexed funder, uint256 amount)",
 ])
 
@@ -131,10 +144,14 @@ async function relayLocksToGenlayer() {
   }
 }
 
-/** Leg 2: GenLayer -> Base. Execute already-judged, already-finalized settlements. */
+/** Leg 2: GenLayer -> Base. Propose, then (after the challenge window)
+ * execute, already-judged, already-finalized settlements. */
 async function relaySettlementsToBase() {
   const claims = await readAllClaims()
   const channels = await readAllChannels()
+  const challengeWindow = await basePublic.readContract({ address: escrowAddress, abi: ESCROW_ABI, functionName: "challengeWindow" })
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000))
+
   for (const claim of claims) {
     if (claim.status !== "executed" || claim.relayed) continue
     const channel = channels.find((c) => c.id === claim.channel_id)
@@ -154,37 +171,72 @@ async function relaySettlementsToBase() {
       }
       continue
     }
+
+    const claimKey = toChannelIdBytes32(claim.id)
+    const channelKey = toChannelIdBytes32(channel.id)
     try {
-      const baseTxHash = await baseWallet.writeContract({
-        address: escrowAddress, abi: ESCROW_ABI, functionName: "settle",
-        args: [toChannelIdBytes32(channel.id), toChannelIdBytes32(claim.id), claim.claimant, approvedUnits, claim.outcome_type],
-      })
-      await basePublic.waitForTransactionReceipt({ hash: baseTxHash })
+      const pending = await basePublic.readContract({ address: escrowAddress, abi: ESCROW_ABI, functionName: "getPendingSettlement", args: [claimKey] })
+
+      if (pending.proposedAt === 0n || pending.disputed) {
+        // Nothing proposed yet, or the funder disputed a prior proposal --
+        // (re-)propose the same values GenLayer's own finalized verdict
+        // already decided. This relayer has no separate judgment to fall
+        // back on; a repeated dispute needs manual/owner resolution.
+        const label = pending.disputed ? "re-propose" : "propose"
+        const proposeTx = await baseWallet.writeContract({
+          address: escrowAddress, abi: ESCROW_ABI, functionName: "proposeSettlement",
+          args: [claimKey, channelKey, claim.claimant, approvedUnits, claim.outcome_type],
+        })
+        await basePublic.waitForTransactionReceipt({ hash: proposeTx })
+        console.log(`[${label}] ${claim.id} -> ${claim.claimant} (Base tx ${proposeTx})`)
+        continue
+      }
+      if (pending.executed) continue // already done -- mark_relayed below will catch up next cycle if it hasn't already
+      if (nowSeconds < pending.proposedAt + challengeWindow) continue // still within the challenge window
+
+      const execTx = await baseWallet.writeContract({ address: escrowAddress, abi: ESCROW_ABI, functionName: "executeSettlement", args: [claimKey] })
+      await basePublic.waitForTransactionReceipt({ hash: execTx })
       const genlayerHash = await genlayer.writeContract({
-        address: voltAddress, functionName: "mark_relayed", args: [claim.id, baseTxHash],
+        address: voltAddress, functionName: "mark_relayed", args: [claim.id, execTx],
       })
-      console.log(`[settle] ${claim.id} -> ${claim.claimant} (Base tx ${baseTxHash}, GenLayer tx ${genlayerHash})`)
+      console.log(`[settle] ${claim.id} -> ${claim.claimant} (Base tx ${execTx}, GenLayer tx ${genlayerHash})`)
     } catch (err) {
       console.error(`[settle] failed for ${claim.id}:`, err.message || err)
     }
   }
 }
 
-/** Leg 3: GenLayer -> Base. Refund channels the funder has closed. */
+/** Leg 3: GenLayer -> Base. Propose, then (after the challenge window)
+ * execute, refunds for channels the funder has closed. */
 async function relayClosuresToBase() {
   const channels = await readAllChannels()
+  const challengeWindow = await basePublic.readContract({ address: escrowAddress, abi: ESCROW_ABI, functionName: "challengeWindow" })
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000))
+
   for (const channel of channels) {
     if (channel.status !== "closing") continue
+    const channelKey = toChannelIdBytes32(channel.id)
     try {
-      const baseTxHash = await baseWallet.writeContract({
-        address: escrowAddress, abi: ESCROW_ABI, functionName: "refundChannel",
-        args: [toChannelIdBytes32(channel.id), channel.funder],
-      })
-      await basePublic.waitForTransactionReceipt({ hash: baseTxHash })
+      const pending = await basePublic.readContract({ address: escrowAddress, abi: ESCROW_ABI, functionName: "getPendingSettlement", args: [channelKey] })
+
+      if (pending.proposedAt === 0n || pending.disputed) {
+        const label = pending.disputed ? "re-propose-refund" : "propose-refund"
+        const proposeTx = await baseWallet.writeContract({
+          address: escrowAddress, abi: ESCROW_ABI, functionName: "proposeRefund", args: [channelKey, channel.funder],
+        })
+        await basePublic.waitForTransactionReceipt({ hash: proposeTx })
+        console.log(`[${label}] ${channel.id} -> ${channel.funder} (Base tx ${proposeTx})`)
+        continue
+      }
+      if (pending.executed) continue
+      if (nowSeconds < pending.proposedAt + challengeWindow) continue
+
+      const execTx = await baseWallet.writeContract({ address: escrowAddress, abi: ESCROW_ABI, functionName: "executeSettlement", args: [channelKey] })
+      await basePublic.waitForTransactionReceipt({ hash: execTx })
       const genlayerHash = await genlayer.writeContract({
-        address: voltAddress, functionName: "confirm_channel_closed", args: [channel.id, baseTxHash],
+        address: voltAddress, functionName: "confirm_channel_closed", args: [channel.id, execTx],
       })
-      console.log(`[close] ${channel.id} refunded to ${channel.funder} (Base tx ${baseTxHash}, GenLayer tx ${genlayerHash})`)
+      console.log(`[close] ${channel.id} refunded to ${channel.funder} (Base tx ${execTx}, GenLayer tx ${genlayerHash})`)
     } catch (err) {
       console.error(`[close] failed for ${channel.id}:`, err.message || err)
     }

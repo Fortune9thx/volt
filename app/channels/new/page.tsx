@@ -14,6 +14,7 @@ interface ChannelForm {
   mandate: string;
   parties: string;
   expiry: string;
+  allowedEvidenceDomains: string;
 }
 
 const CHECKS: Array<[keyof ChannelForm, (v: unknown, all: ChannelForm) => boolean, string]> = [
@@ -25,7 +26,7 @@ const CHECKS: Array<[keyof ChannelForm, (v: unknown, all: ChannelForm) => boolea
 export default function CreateChannel() {
   const router = useRouter();
   const { address, connect } = useWallet();
-  const [form, setForm] = useState<ChannelForm>({ mandate: "", parties: "", expiry: "" });
+  const [form, setForm] = useState<ChannelForm>({ mandate: "", parties: "", expiry: "", allowedEvidenceDomains: "" });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +48,7 @@ export default function CreateChannel() {
       setStatus(formatWriteStatus("SUBMITTED"));
       const parties = form.parties.includes(addr) ? form.parties : `${addr},${form.parties}`;
       const channelId = await createChannel(
-        { mandate: form.mandate, parties, expiry: form.expiry },
+        { mandate: form.mandate, parties, expiry: form.expiry, allowedEvidenceDomains: form.allowedEvidenceDomains },
         (statusName) => setStatus(formatWriteStatus(statusName))
       );
       router.push(`/channels/${channelId}?justCreated=1`);
@@ -82,6 +83,13 @@ export default function CreateChannel() {
           </FormField>
           <FormField label="Expiry" error={fieldErrors.expiry}>
             <Input type="date" value={form.expiry} onChange={set("expiry")} />
+          </FormField>
+          <FormField label="Allowed evidence domains (optional)">
+            <Input placeholder="e.g. github.com, tracking-carrier.com" value={form.allowedEvidenceDomains} onChange={set("allowedEvidenceDomains")} />
+            <p className="mt-1.5 text-xs text-text-muted">
+              Leave blank to accept evidence from any source. Restricting it here means both parties agree upfront which
+              domains count as evidence — before either of you has a stake in a specific claim.
+            </p>
           </FormField>
           <p className="text-xs text-text-muted leading-relaxed rounded-lg bg-surface-alt p-3">
             Creating a channel doesn&rsquo;t lock funds yet. After creation, you&rsquo;ll lock real USDC on Base

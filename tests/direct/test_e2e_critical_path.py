@@ -31,6 +31,7 @@ def test_full_channel_lifecycle_claim_judge_execute_relay_stays_open(contract, d
         mandate="Pay the claimant 500 USDC if the referenced shipment tracking page shows status DELIVERED at the destination address.",
         parties=f"{str(direct_alice)},{str(direct_bob)}",
         expiry="2026-12-31",
+        allowed_evidence_domains="",
     )
     assert channel_id == "chn_1"
 
@@ -133,6 +134,7 @@ def test_claim_with_unfetchable_evidence_fails_closed_and_refunds(contract, dire
         mandate="Pay 100 USDC if the linked page proves the event occurred.",
         parties=f"{str(direct_alice)},{str(direct_bob)}",
         expiry="2026-12-31",
+        allowed_evidence_domains="",
     )
     direct_vm.sender = direct_owner
     contract.confirm_lock(channel_id=channel_id, base_tx_hash="0xbase_lock_2", amount_usdc=500)

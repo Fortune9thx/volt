@@ -29,12 +29,13 @@ def contract(direct_deploy):
     return direct_deploy(CONTRACT_PATH, sdk_version="v0.2.16")
 
 
-def _create_and_fund_channel(contract, direct_vm, funder, direct_owner, amount_usdc=1000, tx_hash="0xbase_lock", parties=None):
+def _create_and_fund_channel(contract, direct_vm, funder, direct_owner, amount_usdc=1000, tx_hash="0xbase_lock", parties=None, allowed_evidence_domains=""):
     direct_vm.sender = funder
     channel_id = contract.create_channel(
         mandate="Pay 100 USDC if the linked evidence proves the condition.",
         parties=parties if parties is not None else str(funder),
         expiry="2026-12-31",
+        allowed_evidence_domains=allowed_evidence_domains,
     )
     direct_vm.sender = direct_owner
     contract.confirm_lock(channel_id=channel_id, base_tx_hash=tx_hash, amount_usdc=amount_usdc)
@@ -44,7 +45,7 @@ def _create_and_fund_channel(contract, direct_vm, funder, direct_owner, amount_u
 class TestAccessControlMatrix:
     def test_non_relayer_cannot_confirm_lock(self, contract, direct_vm, direct_alice, direct_bob):
         direct_vm.sender = direct_alice
-        channel_id = contract.create_channel(mandate="x" * 20, parties=str(direct_alice), expiry="2026-12-31")
+        channel_id = contract.create_channel(mandate="x" * 20, parties=str(direct_alice), expiry="2026-12-31", allowed_evidence_domains="")
         direct_vm.sender = direct_bob
         with pytest.raises(Exception):
             contract.confirm_lock(channel_id=channel_id, base_tx_hash="0xfake", amount_usdc=1000)
@@ -244,7 +245,7 @@ class TestAccessControlMatrix:
 
         direct_vm.sender = direct_alice
         with pytest.raises(Exception):
-            contract.create_channel(mandate="x" * 20, parties=str(direct_alice), expiry="2026-12-31")
+            contract.create_channel(mandate="x" * 20, parties=str(direct_alice), expiry="2026-12-31", allowed_evidence_domains="")
 
         direct_vm.sender = direct_bob
         with pytest.raises(Exception):

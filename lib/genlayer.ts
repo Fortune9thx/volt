@@ -149,6 +149,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   INVALID_REQUESTED_AMOUNT: "Enter a valid requested amount.",
   REQUESTED_AMOUNT_EXCEEDS_CHANNEL_BALANCE: "The requested amount exceeds this channel's locked balance.",
   NOT_CHANNEL_PARTY: "You're not the funder or a listed party on this channel.",
+  EVIDENCE_SOURCE_NOT_ALLOWED: "This channel restricts evidence to specific domains, and one or more of your evidence URLs isn't from an allowed source.",
   INVALID_SETTLEMENT_AMOUNT: "Invalid settlement amount.",
 };
 
@@ -306,6 +307,7 @@ export interface Channel {
   total_settled_units: string;
   expiry: string;
   status: "active" | "closing" | "closed";
+  allowed_evidence_domains: string;
 }
 
 export interface Claim {
@@ -344,10 +346,14 @@ export function unitsToUsdc(units: string | number): number {
 }
 
 export async function createChannel(
-  params: { mandate: string; parties: string; expiry: string },
+  params: { mandate: string; parties: string; expiry: string; allowedEvidenceDomains?: string },
   onStatus?: (statusName: string) => void
 ): Promise<string> {
-  return (await writeContract("create_channel", [params.mandate, params.parties, params.expiry], onStatus)) as string;
+  return (await writeContract(
+    "create_channel",
+    [params.mandate, params.parties, params.expiry, params.allowedEvidenceDomains ?? ""],
+    onStatus
+  )) as string;
 }
 
 export async function getChannel(channelId: string): Promise<Channel> {

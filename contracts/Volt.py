@@ -214,6 +214,18 @@ class Volt(gl.Contract):
                 break
         return urls
 
+    def _url_domain(self, url: str) -> str:
+        # Minimal, dependency-free domain extraction (no urllib.parse --
+        # keeping this hand-written and auditable rather than depending on
+        # a stdlib module's behavior inside GenVM). "www." is stripped so
+        # https://www.example.com and https://example.com are treated as
+        # the same allowed source.
+        rest = url.split("://", 1)[-1]
+        domain = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain
+
     # ------------------------------------------------------- two-stage judgment
 
     def _extract_settlement_facts(self, token: str, mandate_text: str, claim_evidence: str, evidence_urls: list):
@@ -292,21 +304,42 @@ class Volt(gl.Contract):
     # ------------------------------------------------------------- channels
 
     @gl.public.write
-    def create_channel(self, mandate: str, parties: str, expiry: str) -> str:
+    def create_channel(self, mandate: str, parties: str, expiry: str, allowed_evidence_domains: str) -> str:
         # NOT payable: GenLayer never custodies real funds in the hybrid
         # model -- USDC is locked on Base Sepolia via VoltEscrow.lockFunds,
         # and the relayer mirrors that lock here via confirm_lock once it
         # observes the real on-chain event. `parties` is a comma-separated
         # address list (kept as a plain str -- GenVM storage/calldata
         # favors flat scalars over nested collections).
+        #
+        # allowed_evidence_domains (optional -- pass "" for unrestricted):
+        # a comma-separated domain allowlist agreed by the FUNDER when the
+        # channel/Mandate is created, before any specific claim or dispute
+        # exists. Without this, evidence-source trust is entirely up to
+        # whatever the claimant unilaterally picks at claim time -- a
+        # self-interested party choosing their own evidence with no
+        # upfront agreement. Restricting it here instead means both
+        # parties have already agreed a source is acceptable before either
+        # of them has a stake in a specific outcome. Left empty, evidence
+        # sourcing is unrestricted, preserving the arbitrary-Mandate
+        # flexibility this product depends on for Mandates that don't need
+        # it. See SECURITY.md.
         self._require_not_paused()
         self._require_nonempty(mandate, "INVALID_MANDATE", max_len=4000)
         self._require_nonempty(parties, "INVALID_PARTIES", max_len=1000)
         self._require_nonempty(expiry, "INVALID_EXPIRY", max_len=32)
+        if len(allowed_evidence_domains) > 1000:
+            raise gl.vm.UserError("INVALID_ALLOWED_EVIDENCE_DOMAINS_TOO_LONG")
 
         parties_normalized = ",".join(p.strip().lower() for p in parties.split(",") if p.strip())
         if not parties_normalized:
             raise gl.vm.UserError("INVALID_PARTIES")
+        # _url_domain handles both a bare domain ("github.com") and a full
+        # URL ("https://github.com") uniformly -- splitting on "://" that
+        # isn't present just returns the original string unchanged.
+        domains_normalized = ",".join(
+            self._url_domain(d.strip()) for d in allowed_evidence_domains.split(",") if d.strip()
+        )
 
         channel_id = f"chn_{int(self.channel_count) + 1}"
         self.channel_count = u256(int(self.channel_count) + 1)
@@ -321,6 +354,7 @@ class Volt(gl.Contract):
             "total_settled_units": "0",
             "expiry": expiry,
             "status": "active",
+            "allowed_evidence_domains": domains_normalized,
         }
         self.channels[channel_id] = json.dumps(record)
         self.channel_ids = self._append_id(self.channel_ids, channel_id)
@@ -430,6 +464,18 @@ class Volt(gl.Contract):
         requested_units = int(self._require_positive_usdc(requested_amount_usdc, "INVALID_REQUESTED_AMOUNT"))
         if requested_units > int(record.get("balance_units", "0")):
             raise gl.vm.UserError("REQUESTED_AMOUNT_EXCEEDS_CHANNEL_BALANCE")
+
+        # If the channel's funder restricted evidence sources at creation
+        # time (before either party had a stake in a specific outcome),
+        # EVERY submitted URL must come from an allowed domain -- reject
+        # the whole claim if even one isn't, rather than let a claimant pad
+        # a claim with one approved URL and one self-serving one.
+        allowed_domains_raw = record.get("allowed_evidence_domains", "")
+        if allowed_domains_raw:
+            allowed_domains = set(allowed_domains_raw.split(","))
+            submitted_urls = self._split_evidence_urls(evidence)
+            if not submitted_urls or any(self._url_domain(u) not in allowed_domains for u in submitted_urls):
+                raise gl.vm.UserError("EVIDENCE_SOURCE_NOT_ALLOWED")
 
         claim_id = f"clm_{int(self.claim_count) + 1}"
         self.claim_count = u256(int(self.claim_count) + 1)

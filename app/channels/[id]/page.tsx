@@ -170,6 +170,10 @@ export default function ChannelDetail() {
             <p>
               <span className="font-medium text-text-primary">Parties</span> {channel.parties}
             </p>
+            <p>
+              <span className="font-medium text-text-primary">Allowed evidence</span>{" "}
+              {channel.allowed_evidence_domains ? channel.allowed_evidence_domains : "any source"}
+            </p>
           </Card>
           <Button variant="ghost" className="w-full" onClick={() => router.push("/dashboard")}>
             Back to Dashboard
