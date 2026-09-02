@@ -58,7 +58,7 @@ class TestAccessControlMatrix:
         mock_two_stage_judgment(
             direct_vm,
             facts={"fetch_ok": True, "supports_claim": True},
-            intent={"outcome_type": "full", "confidence": "0.95", "reasoning": "Confirmed."},
+            intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.95", "reasoning": "Confirmed."},
         )
         contract.judge_claim(claim_id=claim_id)
         contract.execute_settlement(claim_id=claim_id)
@@ -94,7 +94,7 @@ class TestAccessControlMatrix:
         mock_two_stage_judgment(
             direct_vm,
             facts={"fetch_ok": True, "supports_claim": True},
-            intent={"outcome_type": "full", "confidence": "0.95", "reasoning": "Confirmed."},
+            intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.95", "reasoning": "Confirmed."},
         )
         contract.judge_claim(claim_id=claim_id)
 
@@ -111,7 +111,7 @@ class TestAccessControlMatrix:
         mock_two_stage_judgment(
             direct_vm,
             facts={"fetch_ok": True, "supports_claim": True},
-            intent={"outcome_type": "full", "confidence": "0.95", "reasoning": "Confirmed."},
+            intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.95", "reasoning": "Confirmed."},
         )
         contract.judge_claim(claim_id=claim_id)
         status = contract.execute_settlement(claim_id=claim_id)
@@ -181,7 +181,7 @@ class TestAccessControlMatrix:
         mock_two_stage_judgment(
             direct_vm,
             facts={"fetch_ok": True, "supports_claim": True},
-            intent={"outcome_type": "full", "confidence": "0.95", "reasoning": "Confirmed."},
+            intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.95", "reasoning": "Confirmed."},
         )
         contract.judge_claim(claim_id=claim_id)
         direct_vm.sender = direct_alice
@@ -197,7 +197,7 @@ class TestAccessControlMatrix:
         mock_two_stage_judgment(
             direct_vm,
             facts={"fetch_ok": True, "supports_claim": True},
-            intent={"outcome_type": "full", "confidence": "0.95", "reasoning": "Confirmed."},
+            intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.95", "reasoning": "Confirmed."},
         )
         contract.judge_claim(claim_id=claim_id)
         contract.execute_settlement(claim_id=claim_id)

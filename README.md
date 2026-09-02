@@ -42,8 +42,9 @@ evm/contracts/test/MockUSDC.sol    Test-only ERC-20 for Hardhat's local test sui
 scripts/relayer.mjs                The trusted bridge between both chains
 scripts/deploy.mjs                 Deploys Volt.py to GenLayer
 evm/scripts/deploy.ts              Deploys VoltEscrow.sol to Base Sepolia
-tests/direct/                      gltest suite (26 tests)
+tests/direct/                      gltest suite (31 tests)
 evm/test/                          Hardhat suite (8 tests)
+lib/genlayer.test.ts               Vitest suite: return-value decoding, id recovery
 app/                               Next.js 16 App Router pages
 lib/genlayer.ts                    genlayer-js client + typed contract wrappers
 lib/base.ts                        viem client for the Base Sepolia leg (lockFunds)
@@ -66,6 +67,12 @@ Point `.env` (see `.env.example`) at the live addresses above and connect a wall
 pip install genlayer-test genvm-linter
 genvm-lint check contracts/Volt.py
 gltest tests/direct -v
+```
+
+**Frontend tests:**
+
+```bash
+npm test
 ```
 
 **EVM tests:**

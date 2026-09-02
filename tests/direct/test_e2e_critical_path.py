@@ -59,7 +59,7 @@ def test_full_channel_lifecycle_claim_judge_execute_relay_stays_open(contract, d
     mock_two_stage_judgment(
         direct_vm,
         facts={"fetch_ok": True, "supports_claim": True, "facts_summary": "Tracking page shows DELIVERED at destination."},
-        intent={"outcome_type": "full", "confidence": "0.96", "reasoning": "Tracking page confirms delivery, satisfying the Mandate."},
+        intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.96", "reasoning": "Tracking page confirms delivery, satisfying the Mandate."},
     )
     status = contract.judge_claim(claim_id=claim_id)
     assert status == "judged"
@@ -98,7 +98,7 @@ def test_full_channel_lifecycle_claim_judge_execute_relay_stays_open(contract, d
     mock_two_stage_judgment(
         direct_vm,
         facts={"fetch_ok": True, "supports_claim": True, "facts_summary": "Second shipment also shows DELIVERED."},
-        intent={"outcome_type": "full", "confidence": "0.93", "reasoning": "Second tracking page also confirms delivery."},
+        intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.93", "reasoning": "Second tracking page also confirms delivery."},
     )
     contract.judge_claim(claim_id=second_claim_id)
     contract.execute_settlement(claim_id=second_claim_id)

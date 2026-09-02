@@ -122,11 +122,14 @@ def mock_two_stage_judgment(direct_vm, facts: dict, intent: dict, evidence_url_p
     "supports_claim": True, "facts_summary": "..."}.
 
     intent: the Stage B result, e.g. {"outcome_type": "full",
-    "confidence": "0.95", "reasoning": "..."}, or for a partial outcome,
-    {"outcome_type": "partial", "partial_percent": 50, "confidence": "0.9",
+    "confidence_tier": "high", "confidence": "0.95", "reasoning": "..."},
+    or for a partial outcome, {"outcome_type": "partial",
+    "partial_percent": 50, "confidence_tier": "high", "confidence": "0.9",
     "reasoning": "..."} -- partial_percent must be one of the fixed buckets
-    the contract accepts (25/50/75); the exact USDC amount is never taken
-    from the model directly (see contracts/Volt.py's judge_claim)."""
+    the contract accepts (25/50/75); confidence_tier must be exactly "high"
+    to avoid the confidence gate forcing a refund (the numeric confidence
+    value is display-only, never used for gating -- see judge_claim); the
+    exact USDC amount is never taken from the model directly."""
     facts = dict(facts)
     facts.setdefault("fetch_ok", True)
     facts.setdefault("supports_claim", True)

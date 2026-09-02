@@ -11,7 +11,6 @@ from genlayer import *
 # SECURITY.md's "Trust model" for the full disclosure of what this
 # relayer can and cannot do.
 USDC_UNIT = 10 ** 6
-CONFIDENCE_THRESHOLD = 0.85
 MAX_USDC_AMOUNT = 10 ** 12
 # "partial" settlements may only claim one of these fixed percentages of the
 # requested amount. A free-typed integer here would let leader/validator
@@ -180,6 +179,27 @@ class Volt(gl.Contract):
             raise gl.vm.UserError(error_code + "_TOO_LARGE")
         return u256(amount_int * USDC_UNIT)
 
+    def _summaries_agree(self, a: str, b: str) -> bool:
+        # Deterministic, hand-written similarity check -- exact string
+        # match would almost always fail between two independently-run LLM
+        # extractions of the same underlying content (different wording
+        # for the same fact), but leaving facts_summary completely
+        # unchecked left the leader's description of what the evidence
+        # shows uncorroborated, even though fetch_ok/supports_claim were
+        # already cross-validated. Word-overlap is coarse but catches
+        # genuine divergence (a validator describing a materially
+        # different fact) while tolerating paraphrasing -- and stays plain
+        # Python, so it remains testable in gltest direct-mode like the
+        # rest of this validator, unlike routing it through an LLM-mediated
+        # comparison would be. See SECURITY.md.
+        words_a = set(w for w in a.lower().split() if len(w) > 3)
+        words_b = set(w for w in b.lower().split() if len(w) > 3)
+        if not words_a or not words_b:
+            return not words_a and not words_b
+        overlap = len(words_a & words_b)
+        smaller = min(len(words_a), len(words_b))
+        return (overlap / smaller) >= 0.4
+
     def _split_evidence_urls(self, evidence: str) -> list:
         # Claimant-supplied evidence is newline/comma separated URLs. Only
         # http(s) URLs are fetched -- anything else is ignored, not an error,
@@ -260,6 +280,8 @@ class Volt(gl.Contract):
                 if self._coerce_strict_bool(leader_facts.get("fetch_ok")) != self._coerce_strict_bool(validator_facts.get("fetch_ok")):
                     return False
                 if self._coerce_strict_bool(leader_facts.get("supports_claim")) != self._coerce_strict_bool(validator_facts.get("supports_claim")):
+                    return False
+                if not self._summaries_agree(str(leader_facts.get("facts_summary", "")), str(validator_facts.get("facts_summary", ""))):
                     return False
                 return True
             except Exception:
@@ -493,11 +515,15 @@ class Volt(gl.Contract):
                 "must be exactly one of the integers 25, 50, or 75, representing "
                 'what percentage of the requested amount is justified; use 0 for '
                 'full/refund -- there is no other way to express a partial amount), '
-                '"confidence": "(a decimal 0.0-1.0 as a QUOTED STRING, never a bare '
-                'number)", "reasoning": (ONE short sentence grounded in the '
-                "verified facts)}. Every key above is REQUIRED -- never omit one. "
-                "Only claim high confidence when the verified facts clearly and "
-                "unambiguously satisfy the Mandate."
+                '"confidence_tier": (exactly "high" ONLY if the verified facts '
+                "clearly and unambiguously satisfy the Mandate's condition beyond "
+                'reasonable doubt, "low" for any genuine ambiguity, partial '
+                'relevance, or uncertainty -- "low" always forces a refund '
+                'regardless of outcome_type above, so only use "high" when truly '
+                'confident), "confidence": "(a decimal 0.0-1.0 as a QUOTED STRING, '
+                'informational only, never a bare number)", "reasoning": (ONE '
+                "short sentence grounded in the verified facts)}. Every key above "
+                "is REQUIRED -- never omit one."
             )
             result = gl.nondet.exec_prompt(prompt, response_format="json")
             return json.dumps(result)
@@ -521,15 +547,17 @@ class Volt(gl.Contract):
             principle=(
                 "Two independent settlement judgments over the same already-"
                 "verified facts and the same Mandate are equivalent ONLY if they "
-                "agree exactly on outcome_type (full/partial/refund) AND, when "
-                "outcome_type is 'partial', agree exactly on partial_percent (one "
-                "of 25, 50, 75). Differences in reasoning wording, exact "
-                "confidence value, or formatting NEVER make two answers non-"
-                "equivalent -- ONLY a different outcome_type, or a different "
-                "partial_percent under 'partial', makes them non-equivalent."
+                "agree exactly on outcome_type (full/partial/refund), agree "
+                "exactly on confidence_tier (high/low), AND, when outcome_type is "
+                "'partial', agree exactly on partial_percent (one of 25, 50, 75). "
+                "Differences in reasoning wording, the exact numeric confidence "
+                "value, or formatting NEVER make two answers non-equivalent -- "
+                "ONLY a different outcome_type, a different confidence_tier, or a "
+                "different partial_percent under 'partial', makes them non-"
+                "equivalent."
             ),
         )
-        safe_default = {"outcome_type": "refund", "partial_percent": 0, "confidence": "0.0", "reasoning": "Judgment output was malformed; settlement refused as a safe default."}
+        safe_default = {"outcome_type": "refund", "partial_percent": 0, "confidence_tier": "low", "confidence": "0.0", "reasoning": "Judgment output was malformed; settlement refused as a safe default."}
         try:
             outcome = json.loads(outcome_str)
         except (ValueError, TypeError):
@@ -545,7 +573,18 @@ class Volt(gl.Contract):
         if not isinstance(reasoning, str):
             reasoning = str(reasoning)
 
-        if confidence < CONFIDENCE_THRESHOLD:
+        # The gating signal is confidence_tier, not the raw confidence
+        # float -- confidence_tier is bound to consensus via the principle
+        # above (leader and validator must agree exactly on "high"/"low"),
+        # whereas the numeric confidence value is explicitly NOT bound
+        # (two independent LLM calls essentially never produce the same
+        # float). Gating on the unbound float would let a single party's
+        # own confidence assessment single-handedly flip a genuinely-
+        # earned payout to a refund with no cross-validation at all --
+        # confidence is otherwise used purely for display. A malformed or
+        # missing tier fails closed exactly like an out-of-bucket
+        # partial_percent does.
+        if outcome.get("confidence_tier") != "high":
             outcome_type = "refund"
 
         # The exact USDC amount is never trusted as a free-typed model

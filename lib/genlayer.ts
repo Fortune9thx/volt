@@ -1,6 +1,7 @@
-import { createClient, createAccount } from "genlayer-js";
+import { createClient, createAccount, abi } from "genlayer-js";
 import { testnetBradbury, studionet } from "genlayer-js/chains";
 import { TransactionStatus, ExecutionResult, type CalldataEncodable, type Address } from "genlayer-js/types";
+import { hexToBytes } from "viem";
 
 const CHAIN = process.env.NEXT_PUBLIC_GENLAYER_CHAIN === "studionet" ? studionet : testnetBradbury;
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_VOLT_CONTRACT_ADDRESS;
@@ -226,11 +227,41 @@ async function pollUntilFinalized(
   throw new TransactionTimeoutError();
 }
 
+/**
+ * Decodes a write's actual return value (e.g. create_channel's "chn_1")
+ * from the raw calldata-encoded bytes GenVM's debug trace exposes as
+ * `return_data`. Pure and network-free so it's directly unit-testable
+ * against a real captured fixture -- see lib/genlayer.test.ts.
+ *
+ * client.writeContract only ever resolves with a transaction HASH (that's
+ * all a submitted write can return, by definition -- the contract's own
+ * return value doesn't exist yet at that point). Every page that treats
+ * this hash as if it were the channel/claim id (`/channels/${hash}`) is
+ * silently broken: get_channel(hash) can never find anything, since no
+ * channel or claim is ever assigned an id resembling a tx hash.
+ */
+export function decodeCalldataReturnValue(returnDataHex: string): unknown {
+  const bytes = hexToBytes(returnDataHex as `0x${string}`);
+  const decoded = abi.calldata.decode(bytes) as Map<string, unknown>;
+  if (decoded.get("kind") !== "Return") {
+    throw new Error(`Unexpected calldata result kind: ${String(decoded.get("kind"))}`);
+  }
+  return decoded.get("data");
+}
+
+async function getWriteReturnValue(
+  client: Awaited<ReturnType<typeof getClient>>,
+  hash: Awaited<ReturnType<typeof client.writeContract>>
+): Promise<unknown> {
+  const trace = await client.debugTraceTransaction({ hash });
+  return decodeCalldataReturnValue((trace as { return_data: string }).return_data);
+}
+
 async function writeContract(
   functionName: string,
   args: CalldataEncodable[] = [],
   onStatus?: (statusName: string) => void
-): Promise<string> {
+): Promise<unknown> {
   const client = await getClient();
   let hash: Awaited<ReturnType<typeof client.writeContract>>;
   let tx: Awaited<ReturnType<typeof client.getTransaction>>;
@@ -258,7 +289,11 @@ async function writeContract(
   if ((tx as { txExecutionResultName?: ExecutionResult }).txExecutionResultName !== ExecutionResult.FINISHED_WITH_RETURN) {
     throw new Error("Transaction was finalized, but its execution did not succeed.");
   }
-  return hash;
+  try {
+    return await getWriteReturnValue(client, hash);
+  } catch (err) {
+    throw friendlyContractError(err);
+  }
 }
 
 export interface Channel {
@@ -312,7 +347,7 @@ export async function createChannel(
   params: { mandate: string; parties: string; expiry: string },
   onStatus?: (statusName: string) => void
 ): Promise<string> {
-  return writeContract("create_channel", [params.mandate, params.parties, params.expiry], onStatus);
+  return (await writeContract("create_channel", [params.mandate, params.parties, params.expiry], onStatus)) as string;
 }
 
 export async function getChannel(channelId: string): Promise<Channel> {
@@ -330,23 +365,27 @@ export async function getAllChannelIds(): Promise<string[]> {
   return JSON.parse(raw);
 }
 
-export async function closeChannel(channelId: string, onStatus?: (statusName: string) => void): Promise<string> {
-  return writeContract("close_channel", [channelId], onStatus);
+export async function closeChannel(channelId: string, onStatus?: (statusName: string) => void): Promise<void> {
+  await writeContract("close_channel", [channelId], onStatus);
 }
 
 export async function submitClaim(
   params: { channelId: string; evidence: string; requestedAmountUsdc: number },
   onStatus?: (statusName: string) => void
 ): Promise<string> {
-  return writeContract("submit_claim", [params.channelId, params.evidence, params.requestedAmountUsdc], onStatus);
+  return (await writeContract(
+    "submit_claim",
+    [params.channelId, params.evidence, params.requestedAmountUsdc],
+    onStatus
+  )) as string;
 }
 
 export async function judgeClaim(claimId: string, onStatus?: (statusName: string) => void): Promise<string> {
-  return writeContract("judge_claim", [claimId], onStatus);
+  return (await writeContract("judge_claim", [claimId], onStatus)) as string;
 }
 
 export async function executeSettlement(claimId: string, onStatus?: (statusName: string) => void): Promise<string> {
-  return writeContract("execute_settlement", [claimId], onStatus);
+  return (await writeContract("execute_settlement", [claimId], onStatus)) as string;
 }
 
 export async function getClaim(claimId: string): Promise<Claim> {
