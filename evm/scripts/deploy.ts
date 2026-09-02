@@ -24,7 +24,10 @@ async function main() {
   const escrow = await VoltEscrow.deploy(USDC_ADDRESS, relayerAddress);
   await escrow.waitForDeployment();
 
+  const deployTx = escrow.deploymentTransaction();
+  const receipt = deployTx ? await deployTx.wait() : null;
   console.log(`VoltEscrow deployed to: ${await escrow.getAddress()}`);
+  if (receipt) console.log(`Deployment block: ${receipt.blockNumber}`);
 }
 
 main().catch((err) => {

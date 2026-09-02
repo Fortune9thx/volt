@@ -69,7 +69,7 @@ const ESCROW_ABI = parseAbi([
 // a persistent "last scanned block" file (crash-safe, nothing to lose or
 // corrupt) -- this preserves that, just chunked to respect the RPC limit.
 // RELAYER_DEPLOY_BLOCK overrides the default if VoltEscrow is redeployed.
-const ESCROW_DEPLOY_BLOCK = BigInt(process.env.RELAYER_DEPLOY_BLOCK || process.env.RELAYER_FROM_BLOCK || 45965409n)
+const ESCROW_DEPLOY_BLOCK = BigInt(process.env.RELAYER_DEPLOY_BLOCK || process.env.RELAYER_FROM_BLOCK || 46292268n)
 const GETLOGS_CHUNK_SIZE = 9000n
 
 async function getFundsLockedLogs() {
