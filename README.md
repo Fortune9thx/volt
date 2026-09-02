@@ -3,7 +3,7 @@
 **Settlement that only moves when reality agrees.**
 
 **Live app:** [volt-x9.vercel.app](https://volt-x9.vercel.app)
-**Live contract (GenLayer Bradbury):** [`0x04d42294a674e811549a28ee9497D08D23B409Dc`](https://explorer-bradbury.genlayer.com/address/0x04d42294a674e811549a28ee9497D08D23B409Dc)
+**Live contract (GenLayer Bradbury):** [`0xeCB5ef9F9FDa0876b70d306eF55d90A4b62bf891`](https://explorer-bradbury.genlayer.com/address/0xeCB5ef9F9FDa0876b70d306eF55d90A4b62bf891)
 **Live escrow (Base Sepolia):** [`0x60d692A8731E90A241605644A653ECdCfa31D549`](https://sepolia.basescan.org/address/0x60d692A8731E90A241605644A653ECdCfa31D549)
 
 ## What Volt does
