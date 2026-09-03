@@ -46,18 +46,43 @@ os.unlink = _tolerant_unlink
 # without this patch. This is a gap in the test harness, not in the SDK or
 # in this contract.
 #
-# Fix: handle ExecPromptTemplate by faithfully echoing the leader's own
-# "input" text back as the agreed answer - simulating an LLM that preserves
-# a well-formed structured answer unchanged when asked to satisfy the given
-# task/criteria against it (the realistic behavior for a well-formed input,
-# which is what these tests are constructing). A test can still override
-# this per-call by registering a normal vm.mock_llm(pattern, response) whose
-# pattern matches the leader's "input" text, exactly as for a plain
-# ExecPrompt call.
+# Reading genlayer/gl/eq_principle.py directly (not just its docstrings)
+# shows prompt_comparative's validator_fn is implemented as a PLAIN
+# vm.run_nondet.lazy(fn, validator_fn) call -- no vm.spawn_sandbox involved
+# (unlike strict_eq, whose separate cloudpickle-sandbox dependency IS a real,
+# still-open gap -- see the strict_eq memory). That means Stage B's own
+# validator_fn is captured by direct-mode's _captured_validators list exactly
+# like Stage A's, and IS genuinely invocable via direct_vm.run_validator()
+# -- it was only ever the ExecPromptTemplate handling below that stood in
+# the way, not an architectural limit of the harness. Two fixes were needed:
+#
+# 1. A registered vm.mock_llm(pattern, response) override for an
+#    EqComparative/EqNonComparativeValidator decision must pass a real bool
+#    through UNCHANGED. The previous version of this patch always
+#    json.dumps()'d a non-str override before wrapping it in {"ok": ...} --
+#    turning an intended `False` (disagreement) into the JSON *string*
+#    "false", which calldata round-trips as a non-empty string and is
+#    therefore truthy back in eq_principle.py's `return ret.get()`. That
+#    silently flipped every disagreement override into an agreement.
+# 2. The *default* (no override registered) previously always returned a
+#    truthy "agree" regardless of what leader/validator actually produced --
+#    meaning no test could observe a genuine mismatch without ALSO manually
+#    computing and asserting the "right" answer itself, which would just be
+#    testing the test. The default below instead re-derives agreement from
+#    exactly the fields Volt's own `judge_claim` principle text names as
+#    consensus-critical (outcome_type, confidence_tier, and partial_percent
+#    when outcome_type is "partial") -- the same kind of hand-written,
+#    deterministic equivalence check already proven for Stage A's
+#    _summaries_agree, applied here to simulate what a real GenVM validator
+#    LLM would conclude when asked to judge two answers against that exact
+#    principle.
 # ----------------------------------------------------------------------------
+import json as _json
 from gltest.direct import wasi_mock as _wasi_mock
 
 _original_handle_gl_call = _wasi_mock._handle_gl_call
+
+_VALIDATOR_VOTE_TEMPLATES = ("EqComparative", "EqNonComparativeValidator")
 
 
 def _patched_handle_gl_call(vm, request):
@@ -66,31 +91,61 @@ def _patched_handle_gl_call(vm, request):
     return _original_handle_gl_call(vm, request)
 
 
-def _handle_exec_prompt_template(vm, data):
-    # prompt_non_comparative's payload has an "input" key; prompt_comparative's
-    # (used by Volt's Stage B) has "leader_answer"/"validator_answer" instead
-    # -- fall back to validator_answer so both shapes get *something* to
-    # match a registered vm.mock_llm() override against.
-    match_text = data.get("input") or data.get("validator_answer") or ""
+def _stage_b_intent_fields_agree(leader_answer: str, validator_answer: str) -> bool:
+    """Mirrors judge_claim's own prompt_comparative `principle` text: two
+    Stage B answers are equivalent only if outcome_type and confidence_tier
+    match exactly, and -- when outcome_type is "partial" -- partial_percent
+    also matches exactly. Differences in reasoning wording or the numeric
+    confidence value never count. Falls back to plain string equality for
+    non-JSON/non-dict input rather than guessing."""
+    try:
+        leader = _json.loads(leader_answer)
+        validator = _json.loads(validator_answer)
+    except (ValueError, TypeError):
+        return leader_answer == validator_answer
+    if not isinstance(leader, dict) or not isinstance(validator, dict):
+        return leader_answer == validator_answer
+    if leader.get("outcome_type") != validator.get("outcome_type"):
+        return False
+    if leader.get("confidence_tier") != validator.get("confidence_tier"):
+        return False
+    if leader.get("outcome_type") == "partial" and leader.get("partial_percent") != validator.get("partial_percent"):
+        return False
+    return True
 
+
+def _handle_exec_prompt_template(vm, data):
+    template = data.get("template")
+
+    if template in _VALIDATOR_VOTE_TEMPLATES:
+        # Both templates decide a validator's boolean equivalence vote
+        # (EqComparative for prompt_comparative, EqNonComparativeValidator
+        # for prompt_non_comparative). Match on validator_answer first --
+        # prompt_comparative has no "input" key at all.
+        match_text = data.get("validator_answer") or data.get("input") or ""
+        override = vm._match_llm_mock(match_text) if match_text else None
+        if override is not None:
+            if isinstance(override, str):
+                vote = override.strip().lower() not in ("false", "0", "")
+            else:
+                vote = bool(override)
+            return {"ok": vote}
+        leader_answer = data.get("leader_answer", data.get("output", ""))
+        validator_answer = data.get("validator_answer", data.get("input", ""))
+        return {"ok": _stage_b_intent_fields_agree(str(leader_answer), str(validator_answer))}
+
+    # EqNonComparativeLeader (and any other template): echo the leader's own
+    # "input" text back as the agreed answer -- simulating an LLM that
+    # preserves a well-formed structured answer unchanged when asked to
+    # satisfy the given task/criteria against it. A test can still override
+    # this per-call via a normal vm.mock_llm(pattern, response) matching the
+    # leader's "input" text, exactly as for a plain ExecPrompt call.
+    match_text = data.get("input") or data.get("validator_answer") or ""
     override = vm._match_llm_mock(match_text) if match_text else None
     if override is not None:
         if not isinstance(override, str):
-            import json as _json
             override = _json.dumps(override)
         return {"ok": override}
-
-    # Default (no override registered): echo back a truthy "agree" result.
-    # This means a test that never registers an explicit disagreement mock
-    # cannot observe eq_principle's OWN validator voting False from a
-    # genuinely different independent answer -- proving that requires the
-    # real GenVM node's "EqComparative"/"EqNonComparative*" judgment, which
-    # this harness stubs out entirely. This is the same class of gap already
-    # documented for gl.eq_principle.strict_eq's spawn_sandbox dependency:
-    # a real, disclosed test-harness limitation, not a contract flaw. Stage
-    # A's hand-written run_nondet_unsafe validator (_extract_settlement_facts)
-    # does NOT go through this path and IS genuinely exercisable -- see
-    # test_judgment_consensus.py.
     return {"ok": match_text}
 
 

@@ -12,10 +12,18 @@ pre-submission audit against real GenLayer Portal rejection patterns:
    hand-written gl.vm.run_nondet_unsafe validator that independently
    re-fetches and re-extracts rather than just checking the leader's JSON
    is well-formed. This IS exercisable in gltest direct-mode via
-   direct_vm.run_validator() (unlike gl.eq_principle-mediated validators --
-   see conftest.py's _handle_exec_prompt_template comment for why Stage B's
-   own prompt_comparative validator is NOT independently provable in this
-   harness, a disclosed limitation, not a contract gap).
+   direct_vm.run_validator() -- see TestStageAIndependentValidation.
+
+3. Stage B's judge_intent, via gl.eq_principle.prompt_comparative, is ALSO
+   exercisable the same way: reading genlayer/gl/eq_principle.py shows
+   prompt_comparative's own validator_fn is just a plain
+   vm.run_nondet.lazy(fn, validator_fn) call (no vm.spawn_sandbox, unlike
+   strict_eq), so it's captured by direct-mode exactly like Stage A's and
+   reachable via direct_vm.run_validator(index=1). See
+   TestStageBValidatorConsensus and conftest.py's _handle_exec_prompt_template
+   for how a genuinely differing outcome_type/confidence_tier/partial_percent
+   answer is derived and voted down, mirroring judge_claim's own principle
+   text exactly.
 """
 import json
 
@@ -276,3 +284,107 @@ class TestConfidenceTierGate:
         claim = json.loads(contract.get_claim(claim_id=claim_id))
         assert claim["outcome_type"] == "full"
         assert claim["approved_amount_units"] == str(400 * USDC_UNIT)
+
+
+class TestStageBValidatorConsensus:
+    """
+    gl.eq_principle.prompt_comparative's OWN validator_fn (not just Stage
+    A's hand-written one) is captured by gltest direct-mode's
+    _captured_validators list exactly like a plain run_nondet_unsafe call
+    (see genlayer/gl/eq_principle.py -- prompt_comparative is implemented as
+    vm.run_nondet.lazy(fn, validator_fn), with no vm.spawn_sandbox involved).
+    Within a single judge_claim() call, Stage A's run_nondet_unsafe is
+    captured first (index 0, used throughout TestStageAIndependentValidation
+    above) and Stage B's prompt_comparative second (index 1) -- so
+    direct_vm.run_validator(index=1) re-invokes Stage B's judge_intent a
+    SECOND time under whatever mocks are registered at that moment, then
+    runs it through the same EqComparative equivalence check a real
+    validator would, exactly mirroring judge_claim's own principle text
+    (outcome_type + confidence_tier must match exactly; partial_percent
+    must also match when outcome_type is "partial"; reasoning wording and
+    the numeric confidence value never matter). See conftest.py's
+    _handle_exec_prompt_template for the derivation.
+    """
+
+    def test_validator_rejects_a_differing_outcome_type(self, contract, direct_vm, direct_owner, direct_alice, direct_bob):
+        channel_id = _create_and_fund_channel(contract, direct_vm, direct_alice, direct_owner, parties=f"{str(direct_alice)},{str(direct_bob)}")
+        direct_vm.sender = direct_bob
+        claim_id = contract.submit_claim(channel_id=channel_id, evidence="https://example.com/e", requested_amount_usdc=400)
+        mock_two_stage_judgment(
+            direct_vm,
+            facts={"fetch_ok": True, "supports_claim": True},
+            intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.95", "reasoning": "Clearly met."},
+        )
+        contract.judge_claim(claim_id=claim_id)  # leader path judged "full"
+
+        # An independent validator re-running Stage B and landing on
+        # "refund" instead of "full" -- over the SAME already-agreed facts
+        # and Mandate -- must not be accepted as an equivalent answer.
+        # clear_mocks() first: mock_llm matches in registration order and
+        # returns the FIRST match, so without clearing, the stale "full"
+        # mock registered above by mock_two_stage_judgment would still fire.
+        direct_vm.clear_mocks()
+        direct_vm.mock_llm(r"adjudicating a Settlement Claim", json.dumps({"outcome_type": "refund", "confidence_tier": "high", "confidence": "0.2", "reasoning": "Not met."}))
+        agrees = direct_vm.run_validator(index=1)
+        assert agrees is False
+
+    def test_validator_rejects_a_differing_confidence_tier(self, contract, direct_vm, direct_owner, direct_alice, direct_bob):
+        # Same outcome_type both times -- only confidence_tier differs.
+        # confidence_tier is a consensus-bound field per judge_claim's own
+        # principle text, exactly like outcome_type, so this must also be
+        # rejected, not waved through because "full" matches "full".
+        channel_id = _create_and_fund_channel(contract, direct_vm, direct_alice, direct_owner, parties=f"{str(direct_alice)},{str(direct_bob)}")
+        direct_vm.sender = direct_bob
+        claim_id = contract.submit_claim(channel_id=channel_id, evidence="https://example.com/e", requested_amount_usdc=400)
+        mock_two_stage_judgment(
+            direct_vm,
+            facts={"fetch_ok": True, "supports_claim": True},
+            intent={"outcome_type": "full", "confidence_tier": "high", "confidence": "0.95", "reasoning": "Clearly met."},
+        )
+        contract.judge_claim(claim_id=claim_id)
+
+        direct_vm.clear_mocks()
+        direct_vm.mock_llm(r"adjudicating a Settlement Claim", json.dumps({"outcome_type": "full", "confidence_tier": "low", "confidence": "0.55", "reasoning": "Actually ambiguous."}))
+        agrees = direct_vm.run_validator(index=1)
+        assert agrees is False
+
+    def test_validator_rejects_a_differing_partial_percent(self, contract, direct_vm, direct_owner, direct_alice, direct_bob):
+        # Both agree on "partial" and "high" -- but a different bucket
+        # (25 vs 50) is exactly the class of materially different payout
+        # the principle's partial_percent clause exists to catch.
+        channel_id = _create_and_fund_channel(contract, direct_vm, direct_alice, direct_owner, parties=f"{str(direct_alice)},{str(direct_bob)}")
+        direct_vm.sender = direct_bob
+        claim_id = contract.submit_claim(channel_id=channel_id, evidence="https://example.com/e", requested_amount_usdc=400)
+        mock_two_stage_judgment(
+            direct_vm,
+            facts={"fetch_ok": True, "supports_claim": True},
+            intent={"outcome_type": "partial", "partial_percent": 25, "confidence_tier": "high", "confidence": "0.8", "reasoning": "Partially met."},
+        )
+        contract.judge_claim(claim_id=claim_id)
+
+        direct_vm.clear_mocks()
+        direct_vm.mock_llm(r"adjudicating a Settlement Claim", json.dumps({"outcome_type": "partial", "partial_percent": 50, "confidence_tier": "high", "confidence": "0.75", "reasoning": "More than a quarter met."}))
+        agrees = direct_vm.run_validator(index=1)
+        assert agrees is False
+
+    def test_validator_agrees_when_bound_fields_match_despite_differing_wording(self, contract, direct_vm, direct_owner, direct_alice, direct_bob):
+        # The whole point of prompt_comparative over exact-string matching:
+        # two independent judgments that land on the SAME outcome_type,
+        # confidence_tier, and (when relevant) partial_percent must be
+        # treated as equivalent even though reasoning and the numeric
+        # confidence value -- both explicitly excluded from the principle --
+        # differ completely.
+        channel_id = _create_and_fund_channel(contract, direct_vm, direct_alice, direct_owner, parties=f"{str(direct_alice)},{str(direct_bob)}")
+        direct_vm.sender = direct_bob
+        claim_id = contract.submit_claim(channel_id=channel_id, evidence="https://example.com/e", requested_amount_usdc=400)
+        mock_two_stage_judgment(
+            direct_vm,
+            facts={"fetch_ok": True, "supports_claim": True},
+            intent={"outcome_type": "partial", "partial_percent": 50, "confidence_tier": "high", "confidence": "0.82", "reasoning": "Half of the condition was met."},
+        )
+        contract.judge_claim(claim_id=claim_id)
+
+        direct_vm.clear_mocks()
+        direct_vm.mock_llm(r"adjudicating a Settlement Claim", json.dumps({"outcome_type": "partial", "partial_percent": 50, "confidence_tier": "high", "confidence": "0.91", "reasoning": "Roughly half satisfied, worded differently."}))
+        agrees = direct_vm.run_validator(index=1)
+        assert agrees is True

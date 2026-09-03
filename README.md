@@ -42,7 +42,7 @@ evm/contracts/test/MockUSDC.sol    Test-only ERC-20 for Hardhat's local test sui
 scripts/relayer.mjs                The trusted bridge between both chains
 scripts/deploy.mjs                 Deploys Volt.py to GenLayer
 evm/scripts/deploy.ts              Deploys VoltEscrow.sol to Base Sepolia
-tests/direct/                      gltest suite (36 tests)
+tests/direct/                      gltest suite (40 tests)
 evm/test/                          Hardhat suite (18 tests)
 lib/genlayer.test.ts               Vitest suite: return-value decoding, id recovery
 app/                               Next.js 16 App Router pages
